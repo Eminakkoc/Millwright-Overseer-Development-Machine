@@ -35,7 +35,13 @@ active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active)"
 The feature branch lives in `config.md`'s `## GIT BRANCH` section (written at stage 2). Parse it, validate it, and persist to `progress.md`.
 
 ```bash
-config_file="millwright-overseer/workflow-stream/$active_feature/blueprints/current/config.md"
+config_file="$data_root/workflow-stream/$active_feature/blueprints/current/config.md"
+```
+
+Resolve the data root once so the command honors `userConfig.data_root` / `MO_DATA_ROOT` overrides:
+
+```bash
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 ```
 
 **Extract the GIT BRANCH block.** Read lines from the `## GIT BRANCH` heading to the next `##` heading. Drop HTML comments (`<!-- ... -->`), drop blank lines, drop bullet points (`- ...`). Collect every remaining non-comment, non-empty line. Each such line is treated as a candidate branch name.
@@ -110,8 +116,8 @@ $CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 2
 Compose a compact context bundle for the brainstorming chain. The primer snapshots the parts of `requirements.md`, `config.md`, `summary.md`, and `progress.md` that the chain reads on every entry, so the chain can stay in the primer for the common case and drop into canonical files only when a gap surfaces.
 
 ```bash
-primer_dest="millwright-overseer/workflow-stream/$active_feature/blueprints/current/primer.md"
-requirements_file="millwright-overseer/workflow-stream/$active_feature/blueprints/current/requirements.md"
+primer_dest="$data_root/workflow-stream/$active_feature/blueprints/current/primer.md"
+requirements_file="$data_root/workflow-stream/$active_feature/blueprints/current/requirements.md"
 requirements_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$requirements_file" id)"
 # frontmatter.sh init overwrites — safe to re-run on retry.
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init primer "$primer_dest" \
@@ -160,21 +166,21 @@ Then dispatch on the value:
 
 ### Step 4a — Brainstorming mode: invoke the Skill
 
-Use the `Skill` tool to invoke the `brainstorming` skill with the following primer message:
+Use the `Skill` tool to invoke the `brainstorming` skill with the following primer message. Substitute `<$data_root>` with the resolved data root (e.g. `millwright-overseer` by default; whatever `$data_root` evaluates to in this command's shell context) so the paths point at real files in the user's workspace.
 
 ```
 I'm working on the "<$active_feature>" feature. Use these documents as primary context.
 
 **Context loading order** (read in this order; only escalate when a gap appears):
 
-1. **Required first read** — millwright-overseer/workflow-stream/<$active_feature>/blueprints/current/primer.md
+1. **Required first read** — <$data_root>/workflow-stream/<$active_feature>/blueprints/current/primer.md
    Compact snapshot of active scope, goals, journal context, and likely-relevant skills/rules. For most cycles this is all you need.
 
 2. **On demand** — only if the primer leaves a gap on a specific topic:
-   - millwright-overseer/workflow-stream/<$active_feature>/blueprints/current/requirements.md — full goals / planned / non-goals
-   - millwright-overseer/workflow-stream/<$active_feature>/blueprints/current/config.md — full skills/rules + GIT BRANCH + Overseer Additions
-   - millwright-overseer/quest/<active-slug>/summary.md — feature-indexed journal digest for this cycle (the slug is recorded in `millwright-overseer/quest/active.md`). Read `## Cross-cutting constraints` and `## Feature: <$active_feature>` first; other feature sections are reference-only
-   - millwright-overseer/quest/<active-slug>/todo-list.md — full feature breakdown for this cycle if you need PENDING/TODO context
+   - <$data_root>/workflow-stream/<$active_feature>/blueprints/current/requirements.md — full goals / planned / non-goals
+   - <$data_root>/workflow-stream/<$active_feature>/blueprints/current/config.md — full skills/rules + GIT BRANCH + Overseer Additions
+   - <$data_root>/quest/<active-slug>/summary.md — feature-indexed journal digest for this cycle (the slug is recorded in `<$data_root>/quest/active.md`). Read `## Cross-cutting constraints` and `## Feature: <$active_feature>` first; other feature sections are reference-only
+   - <$data_root>/quest/<active-slug>/todo-list.md — full feature breakdown for this cycle if you need PENDING/TODO context
 
 **Work definition** (the scope I'm taking on this run):
 The IMPLEMENTING items listed in primer.md `## Active scope` are the committed scope for this run. Sibling features in PENDING/TODO are out of scope.

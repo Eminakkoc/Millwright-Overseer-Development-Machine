@@ -26,7 +26,19 @@ print(path)
 
 # No file path or not under workflow data root → skip silently.
 [[ -n "$file_path" ]] || exit 0
-[[ "$file_path" == *"/millwright-overseer/"* ]] || exit 0
+
+# Resolve the configured data-root segment (default `millwright-overseer`,
+# but the user can override via $MO_DATA_ROOT or userConfig.data_root). The
+# hook only validates files that live under that segment so workflows in a
+# custom-named data folder still get validated, and files outside any data
+# folder are silently skipped.
+if [[ -f "${CLAUDE_PLUGIN_ROOT:-}/scripts/internal/common.sh" ]]; then
+  # Source common.sh in a subshell so its `set -euo pipefail` doesn't leak.
+  data_root_segment="$(bash -c "source '${CLAUDE_PLUGIN_ROOT}/scripts/internal/common.sh' && mo_data_root_segment")"
+else
+  data_root_segment="millwright-overseer"
+fi
+[[ "$file_path" == *"/${data_root_segment}/"* ]] || exit 0
 
 # Only check .md files.
 [[ "$file_path" == *.md ]] || exit 0

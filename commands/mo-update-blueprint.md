@@ -78,10 +78,16 @@ The previous blueprint is now at `history/v[<version>]/` and the implementation 
 
 #### Step 4a — Read context (AI work)
 
+Resolve the data root once so every subsequent path honors `userConfig.data_root` / `MO_DATA_ROOT`:
+
+```bash
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+```
+
 Read into working memory:
 
-- **Previous `requirements.md`:** `millwright-overseer/workflow-stream/$active_feature/blueprints/history/v${version}/requirements.md`. Capture the frontmatter (`id`, `todo-list-id`, `todo-item-ids`) and the bodies of `## Planned (future cycles)` and `## Non-goals (out of scope)` (verbatim — these are preserved as-is).
-- **Previous `config.md`:** `millwright-overseer/workflow-stream/$active_feature/blueprints/history/v${version}/config.md`. The `## GIT BRANCH` and `## Overseer Additions` sections are preserved at Step 4d via `blueprints.sh preserve-overseer-sections` — you don't need to copy them by hand.
+- **Previous `requirements.md`:** `$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/requirements.md` (default `data_root` is `millwright-overseer`). Capture the frontmatter (`id`, `todo-list-id`, `todo-item-ids`) and the bodies of `## Planned (future cycles)` and `## Non-goals (out of scope)` (verbatim — these are preserved as-is).
+- **Previous `config.md`:** `$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/config.md`. The `## GIT BRANCH` and `## Overseer Additions` sections are preserved at Step 4d via `blueprints.sh preserve-overseer-sections` — you don't need to copy them by hand.
 - **Implementation reality (cached):**
 
   Use `implementation/change-summary.md` as the source of truth for what the implementation delivers. The same artifact backs `mo-generate-implementation-diagrams` so the analysis runs once per `base-commit..HEAD` range:
@@ -108,7 +114,7 @@ Read into working memory:
   # re-points the requirements-id after the new requirements.md is written in 4b.
   prev_req_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$prev_req" id)"
   $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init change-summary \
-    "millwright-overseer/workflow-stream/$active_feature/implementation/change-summary.md" \
+    "$data_root/workflow-stream/$active_feature/implementation/change-summary.md" \
     "REQUIREMENTS_ID=$prev_req_id" \
     "FEATURE=$active_feature" \
     "BASE_COMMIT=$base_commit_sha" \
@@ -127,8 +133,8 @@ Read into working memory:
 #### Step 4b — Write the new `requirements.md`
 
 ```bash
-new_req="millwright-overseer/workflow-stream/$active_feature/blueprints/current/requirements.md"
-prev_req="millwright-overseer/workflow-stream/$active_feature/blueprints/history/v${version}/requirements.md"
+new_req="$data_root/workflow-stream/$active_feature/blueprints/current/requirements.md"
+prev_req="$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/requirements.md"
 
 # Carry these from prev — they identify which todo items initiated the cycle and
 # survive blueprint refreshes (todo state hasn't changed mid-cycle).
@@ -154,7 +160,7 @@ The frontmatter `commits` array stays empty — `mo-complete-workflow` populates
 #### Step 4c — Write the new `config.md`
 
 ```bash
-new_cfg="millwright-overseer/workflow-stream/$active_feature/blueprints/current/config.md"
+new_cfg="$data_root/workflow-stream/$active_feature/blueprints/current/config.md"
 new_req_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$new_req" id)"
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init config "$new_cfg" \
   "REQUIREMENTS_ID=$new_req_id"
@@ -181,7 +187,7 @@ This reads `## GIT BRANCH` and `## Overseer Additions` bodies from `history/v[<v
 
 #### Step 4e — Regenerate diagrams
 
-Generate diagrams into `millwright-overseer/workflow-stream/$active_feature/blueprints/current/diagrams/` per `docs/workflow-spec.md` § "Diagram conventions":
+Generate diagrams into `$data_root/workflow-stream/$active_feature/blueprints/current/diagrams/` (default `data_root` is `millwright-overseer`) per `docs/workflow-spec.md` § "Diagram conventions":
 
 - **Mandatory**: one `use-case-<feature>.puml`.
 - **Conditional**: one `sequence-<flow>.puml` per significant end-to-end flow described in the new `requirements.md`. Aim for 1–5.
@@ -196,7 +202,7 @@ These are **requirements-level** diagrams (capability, intent, structure). They 
 The just-rotated history version carried its own primer; the regenerated `current/` needs a fresh one pointing at the new `requirements.md` UUID. Branch and base-commit are already settled (this command runs mid-cycle — stage 3+ — so `progress.md` has both).
 
 ```bash
-primer_dest="millwright-overseer/workflow-stream/$active_feature/blueprints/current/primer.md"
+primer_dest="$data_root/workflow-stream/$active_feature/blueprints/current/primer.md"
 new_req_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$new_req" id)"
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init primer "$primer_dest" \
   "REQUIREMENTS_ID=$new_req_id" \

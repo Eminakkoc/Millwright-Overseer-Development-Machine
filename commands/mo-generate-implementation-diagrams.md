@@ -11,9 +11,10 @@ Generates the single set of diagrams the overseer reviews at stage 5. Each diagr
 ### Step 1 — Resolve inputs
 
 ```bash
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active)"
 base_commit="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get base-commit)"
-dest_dir="millwright-overseer/workflow-stream/$active_feature/implementation/diagrams"
+dest_dir="$data_root/workflow-stream/$active_feature/implementation/diagrams"
 mkdir -p "$dest_dir"
 ```
 
@@ -36,12 +37,12 @@ fi
 When the freshness check fails (exit 1 = stale, exit 2 = missing), regenerate the artifact:
 
 ```bash
-requirements_file="millwright-overseer/workflow-stream/$active_feature/blueprints/current/requirements.md"
+requirements_file="$data_root/workflow-stream/$active_feature/blueprints/current/requirements.md"
 requirements_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$requirements_file" id)"
 base_commit_sha="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get base-commit)"
 head_sha="$(git rev-parse HEAD)"
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init change-summary \
-  "millwright-overseer/workflow-stream/$active_feature/implementation/change-summary.md" \
+  "$data_root/workflow-stream/$active_feature/implementation/change-summary.md" \
   "REQUIREMENTS_ID=$requirements_id" \
   "FEATURE=$active_feature" \
   "BASE_COMMIT=$base_commit_sha" \

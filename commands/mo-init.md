@@ -85,10 +85,10 @@ Do not proceed to Step 5 with plugin deps still missing — the workflow's stage
 
 ### Step 5 — Scaffold the data folders
 
-Resolve the data root using the same precedence as the workflow scripts (`$MO_DATA_ROOT`, else `$PWD/millwright-overseer`):
+Resolve the data root via the canonical helper (`scripts/data-root.sh`), which honors `$MO_DATA_ROOT`, then `$CLAUDE_PLUGIN_USER_CONFIG_data_root`, then defaults to `$PWD/millwright-overseer`:
 
 ```bash
-data_root="${MO_DATA_ROOT:-$PWD/millwright-overseer}"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 mkdir -p "$data_root/journal" "$data_root/quest" "$data_root/workflow-stream"
 
 # Seed the empty active-quest pointer (idempotent — won't overwrite an

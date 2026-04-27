@@ -148,7 +148,7 @@ Commands marked **auto** are fired by the millwright on the preceding overseer g
 
 `userConfig` exposes a single setting:
 
-- **`data_root`** (default: `millwright-overseer`) — where workflow data lives relative to project root. If you want workflow data hidden, set to `.millwright-overseer`.
+- **`data_root`** (default: `millwright-overseer`) — where workflow data lives relative to project root. If you want workflow data hidden, set to `.millwright-overseer`. The Claude Code plugin runtime surfaces this value to the workflow scripts via the `CLAUDE_PLUGIN_USER_CONFIG_data_root` env var; you can also override it ad-hoc by exporting `MO_DATA_ROOT` in your shell (takes precedence over `userConfig.data_root`). All commands resolve the data root via `scripts/data-root.sh`, so paths shown in this README and the docs as `millwright-overseer/...` will be `<your-data-root>/...` if you've changed the setting.
 
 ## Safety
 

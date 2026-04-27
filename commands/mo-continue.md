@@ -124,7 +124,8 @@ Runs after the overseer has reviewed the blueprint files (`requirements.md`, `co
 ### Approve Step 1 — Sanity-check blueprint files
 
 ```bash
-bp_dir="millwright-overseer/workflow-stream/$active_feature/blueprints/current"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+bp_dir="$data_root/workflow-stream/$active_feature/blueprints/current"
 for f in "$bp_dir/requirements.md" "$bp_dir/config.md"; do
   [[ -f "$f" ]] || { echo "error: missing $f — run /mo-apply-impact first" >&2; exit 1; }
 done
@@ -237,14 +238,14 @@ A session that was closed mid-chain looks identical to a clean exit at this poin
    $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "sub-flow=chain-in-progress"
    ```
 
-   Then invoke the `brainstorming` Skill with this **resume primer** (substitute literals for the `<...>` placeholders, paste the actual `git log` output where indicated):
+   Then invoke the `brainstorming` Skill with this **resume primer** (substitute literals for the `<...>` placeholders, paste the actual `git log` output where indicated). Substitute `<$data_root>` with the resolved data root (e.g. `millwright-overseer` by default; whatever `$data_root` evaluates to in this command's shell context).
 
    ```
    I'm RESUMING an interrupted implementation session for the "<active_feature>" feature. The previous session ended mid-chain — some commits were made but the plan isn't fully executed.
 
    **Required first reads (in order):**
 
-   1. millwright-overseer/workflow-stream/<active_feature>/blueprints/current/primer.md — the original stage-3 launch primer (active scope, goals, journal context, likely-relevant skills/rules).
+   1. <$data_root>/workflow-stream/<active_feature>/blueprints/current/primer.md — the original stage-3 launch primer (active scope, goals, journal context, likely-relevant skills/rules).
    2. <picked_plan_path> — the plan you wrote in the previous session. Checkbox state (`- [x]` vs `- [ ]`) reflects what's been executed; the next `- [ ]` is where you pick up.
    3. <picked_spec_path> — the spec the plan implements. *(omit this line if no spec candidates were found)*
 
@@ -302,7 +303,8 @@ Run `/mo-draw-diagrams` (the user-facing wrapper around `mo-generate-implementat
 Initialize the overseer-review skeleton (idempotent — `review.sh init` refuses to overwrite, so skip the call if the file already exists), then advance 4 → 5:
 
 ```bash
-ov_file="millwright-overseer/workflow-stream/$active_feature/implementation/overseer-review.md"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+ov_file="$data_root/workflow-stream/$active_feature/implementation/overseer-review.md"
 [[ -f "$ov_file" ]] || $CLAUDE_PLUGIN_ROOT/scripts/review.sh init "$active_feature"
 $CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 4
 ```
@@ -322,7 +324,8 @@ Runs after the overseer has reviewed the implementation and either filled `overs
 ### Overseer Step 1 — Verify overseer-review.md exists
 
 ```bash
-ov_file="millwright-overseer/workflow-stream/$active_feature/implementation/overseer-review.md"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+ov_file="$data_root/workflow-stream/$active_feature/implementation/overseer-review.md"
 [[ -f "$ov_file" ]] || {
   echo "overseer-review.md not found — did you mean to approve with no findings?" >&2
   read -p "Create empty overseer-review.md and approve? (y/n): " ans
@@ -452,8 +455,9 @@ $CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 6
 The review session may have committed new code. The implementation diagrams under `implementation/diagrams/` reflect the state at the post-chain Resume Handler — they don't capture review-loop fixes. Before finalizing, give the overseer the option to refresh:
 
 ```bash
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 review_commits="$(git rev-list --count "$base_commit..HEAD" 2>/dev/null || echo 0)"
-diagram_commits="$(git log --format=%H -- "millwright-overseer/workflow-stream/$active_feature/implementation/diagrams/" | head -1)"
+diagram_commits="$(git log --format=%H -- "$data_root/workflow-stream/$active_feature/implementation/diagrams/" | head -1)"
 new_since_diagrams="$(git rev-list --count "${diagram_commits:-$base_commit}..HEAD" 2>/dev/null || echo 0)"
 ```
 

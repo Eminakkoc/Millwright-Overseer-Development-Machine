@@ -62,7 +62,7 @@ If the AI agent can read, design, and write directly from raw inputs, many tools
 
 - **Requirement documents** no longer need a project manager / business analyst to mediate between customer and developer. Customer voice memos become prompts; meeting transcripts go straight into the journal; vibe-coded prototypes can themselves serve as inputs.
 
-- **Task management tools** (JIRA, Linear) are no longer the single source of truth. Tasks live in `quest/todo-list.md` next to the codebase. PMs query the artifacts via natural-language prompts to their own agents ("summarize what mobile shipped today", "is the loyalty feature done?", "how does it interact with auth?"). The *.md files alongside the code are the answer surface.
+- **Task management tools** (JIRA, Linear) are no longer the single source of truth. Tasks live in the active cycle's `todo-list.md` next to the codebase, and every past cycle's `todo-list.md` is preserved permanently in its dated subfolder under `quest/` as a queryable archive. PMs query the artifacts via natural-language prompts to their own agents ("summarize what mobile shipped today", "is the loyalty feature done?", "how does it interact with auth?"). The *.md files alongside the code are the answer surface.
 
 - **Pull-request review tools** are augmented by structured review files (`overseer-review.md`) that the millwright can re-read on every iteration.
 
@@ -88,7 +88,7 @@ Three rules are stamped into every command and stage:
 
   
 
-A fourth implicit rule: **every artifact is auditable**. Blueprints are rotated into `blueprints/history/v[N]/` on each refresh with a sibling `reason.md` explaining *why*. Findings keep monotonically increasing IR-NNN ids that never reset. Quest cycles and feature cycles have crisp lifecycles with clearly defined entry / exit points. Nothing is ever silently overwritten.
+A fourth implicit rule: **every artifact is auditable**. Blueprints are rotated into `blueprints/history/v[N]/` on each refresh with a sibling `reason.md` explaining *why*; the live `implementation/` folder is archived alongside on stage-8 completion (as `history/v[N+1]/implementation/`), so every finding (including any deferred `status: open` ones), the review-context snapshot, the change-summary, and the implementation diagrams are preserved permanently — not deleted. Quest cycles live in dated `quest/<slug>/` subfolders that are likewise never overwritten and never deleted; the `quest/active.md` pointer simply moves to a new sibling on each `/mo-run`. Findings keep monotonically increasing IR-NNN ids that never reset. Quest cycles and feature cycles have crisp lifecycles with clearly defined entry / exit points. **Nothing is ever silently overwritten — every artifact is auditable**, and PMs can read the complete history of any past cycle from a single feature-version folder.
 
   
 
@@ -134,7 +134,7 @@ A fourth implicit rule: **every artifact is auditable**. Blueprints are rotated 
 
   
 
-- **Owns**: every generated artifact under `quest/`, `workflow-stream/<feature>/blueprints/current/`, and `workflow-stream/<feature>/implementation/`. Owns dispatch — picks the right handler inside `/mo-continue`. Owns auto-fired commands (`mo-apply-impact`, `mo-plan-implementation`, `mo-review`, `mo-complete-workflow`, `mo-draw-diagrams`).
+- **Owns**: every generated artifact under `quest/<active-slug>/` (and the `quest/active.md` pointer), `workflow-stream/<feature>/blueprints/current/`, and `workflow-stream/<feature>/implementation/`. Owns dispatch — picks the right handler inside `/mo-continue`. Owns auto-fired commands (`mo-apply-impact`, `mo-plan-implementation`, `mo-review`, `mo-complete-workflow`, `mo-draw-diagrams`).
 
 - **Never owns**: git operations beyond reads (no branch creation, no commits to main, no force-push), the `## Overseer Additions` block in `config.md`, the journal content, todo selection or assignee tags.
 
@@ -156,7 +156,7 @@ A fourth implicit rule: **every artifact is auditable**. Blueprints are rotated 
 
 1. **Codebase** — whatever the project is building. The mo-workflow does not enforce any particular language or framework on it.
 
-2. **`millwright-overseer/` folder** ("the control room") — the workflow's data root. Path is configurable via `userConfig.data_root` in `plugin.json` (default: `millwright-overseer`; commonly set to `.millwright-overseer` for hidden mode).
+2. **`millwright-overseer/` folder** ("the control room") — the workflow's data root. Path is configurable via `userConfig.data_root` in `plugin.json` (default: `millwright-overseer`; commonly set to `.millwright-overseer` for hidden mode). The plugin reads the runtime value from the `CLAUDE_PLUGIN_USER_CONFIG_data_root` environment variable that Claude Code injects from `userConfig`; the `MO_DATA_ROOT` env var is the explicit shell override for one-off runs. Every command resolves the data root via `scripts/data-root.sh` rather than hardcoding `millwright-overseer/...`, so the same scripts work in either mode without edits.
 
   
 
@@ -224,7 +224,37 @@ journal/
 
   
 
-Generated by `/mo-run` at the start of each cycle and **co-replaced as a unit** when the next `/mo-run` opens a new cycle. Four files share this lifecycle:
+Generated by `/mo-run` at the start of each cycle and **scoped per-cycle** so older cycles are preserved permanently as a task archive. Each `/mo-run` creates a per-cycle subfolder under `quest/` named after a date-prefixed slug — `YYYY-MM-DD-<journal-folder-slugs-joined-with-+>` plus an optional 3-character hash collision suffix when the same slug already exists for the day (e.g. `quest/2026-04-27-pricing-meeting+auth-rfc/`). The cycle's working files live inside that subfolder; the older subfolders are never overwritten. A top-level `quest/active.md` pointer file records which slug is currently active and is the single source of truth that scripts/commands read to resolve the active cycle's directory.
+
+  
+
+```
+
+quest/
+
+├── active.md                                # pointer file: which slug is current
+
+├── 2026-04-27-auth-meeting/                 # an active cycle (or an older preserved one)
+
+│   ├── todo-list.md
+
+│   ├── summary.md
+
+│   ├── progress.md
+
+│   └── queue-rationale.md                   # written at stage 1.5, not stage 1
+
+├── 2026-04-12-pricing-meeting+auth-rfc/     # a previous cycle, preserved permanently
+
+│   └── ...
+
+└── ...
+
+```
+
+  
+
+Four files share the per-cycle lifecycle and live under `quest/<active-slug>/`:
 
   
 
@@ -239,6 +269,14 @@ Generated by `/mo-run` at the start of each cycle and **co-replaced as a unit** 
 | `progress.md` | The central workflow state file. Holds the queue, completed list, and the active feature's runtime block. (See §3.5.) |
 
 | `queue-rationale.md` | Audit of stage 1.5's dependency-ordering decision; survives session breaks so the analysis isn't re-derived on resume. |
+
+  
+
+Three of these (`todo-list.md`, `summary.md`, `progress.md`) are written at stage 1 by `/mo-run`. The fourth, `queue-rationale.md`, is deliberately deferred to stage 1.5 — it is written by `/mo-continue` after the dependency-order analysis runs. The dispatcher keys on its absence under `quest/<active-slug>/` to route to Pre-flight Step 2B.
+
+  
+
+Older cycle subfolders are never deleted, never moved, and never overwritten. PMs and recovery flows can grep across `quest/*/` for any past task, finding, or feature decision; the dated slug doubles as a chronological index.
 
   
 
@@ -338,13 +376,13 @@ workflow-stream/<feature>/
 
 │ └── history/
 
-│ ├── v1/{requirements.md, config.md, primer.md, diagrams/, reason.md}
+│ ├── v1/{requirements.md, config.md, primer.md, diagrams/, reason.md, implementation/}
 
 │ ├── v2/...
 
 │ └── ...
 
-└── implementation/ # cleared at stage 8
+└── implementation/ # archived into history/v[N+1]/implementation/ at stage 8
 
 ├── overseer-review.md # findings file (IR-NNN blocks)
 
@@ -362,9 +400,9 @@ Two regions:
 
   
 
-1. **`blueprints/`** — *permanent with history*. `current/` holds the live blueprint for the active feature. Every refresh rotates `current/*` into `history/v[N+1]/` with a `reason.md` recording why (`completion`, `manual`, `re-spec-cascade`, `re-plan-cascade`, `spec-update`).
+1. **`blueprints/`** — *permanent with history*. `current/` holds the live blueprint for the active feature. Every refresh rotates `current/*` into `history/v[N+1]/` with a `reason.md` recording why (`completion`, `manual`, `re-spec-cascade`, `re-plan-cascade`, `spec-update`). On `completion` rotations (stage 8), the entire live `implementation/` folder is also archived alongside as `history/v[N+1]/implementation/` so the rotated version contains: `requirements.md`, `config.md`, `diagrams/`, `primer.md`, `reason.md`, AND `implementation/` (`overseer-review.md`, `review-context.md`, `change-summary.md`, `diagrams/`).
 
-2. **`implementation/`** — *temporary*. Holds findings and implementation-side artifacts. Cleared by `mo-complete-workflow` (stage 8) and `mo-abort-workflow`.
+2. **`implementation/`** — *temporary in `current/`, permanent in `history/`*. Holds findings and implementation-side artifacts during the cycle. At stage 8 the live folder is archived (moved) into `history/v[N+1]/implementation/`, not deleted — so every finding (including any deferred `status: open` ones), the review-context snapshot, the change-summary, and the implementation diagrams survive as a permanent audit record. PMs querying past cycles can read the full audit trail from a single folder per feature-version. `mo-abort-workflow` still clears the live `implementation/` (an aborted cycle has no committed work to archive).
 
   
 
@@ -372,7 +410,7 @@ Two regions:
 
   
 
-A single YAML-frontmatter Markdown file at `quest/progress.md`. Its frontmatter is the source of truth for "where are we right now":
+A single YAML-frontmatter Markdown file at `quest/<active-slug>/progress.md` (the active cycle's `progress.md`). Its frontmatter is the source of truth for "where are we right now":
 
   
 
@@ -470,7 +508,7 @@ This table summarizes who interacts with which plugin surface, for which purpose
 
 | Overseer | `/mo-run <folder1> [<folder2> ...]` | Generate quest files from selected journal sub-folders. | 1 | Pure journal → quest. No branch arg. |
 
-| Overseer | `quest/todo-list.md` | Marks items `[x]` and adds `(assignee)` tag. | 1.5 | Item selection. |
+| Overseer | `quest/<active-slug>/todo-list.md` | Marks items `[x]` and adds `(assignee)` tag. | 1.5 | Item selection. |
 
 | Overseer | `/mo-continue` (1st in stage 1.5) | Triggers Pre-flight Step 2A: promote `[x] TODO` → `[x] PENDING`, propose queue order. | 1.5 | `pend-selected` rejects unassigned `[x]`. |
 
@@ -508,9 +546,9 @@ This table summarizes who interacts with which plugin surface, for which purpose
 
 | Overseer | `/mo-continue` (after review session) | Review-Resume Handler: sanity-check no open findings, advance 6→7, optional diagram refresh y/n, auto-fire `/mo-complete-workflow`. | 6 → 7 → 8 | Only when there were findings. |
 
-| Millwright (auto) | `/mo-complete-workflow` | Updates IMPLEMENTING → IMPLEMENTED, populates `commits:` in `requirements.md`, rotates `blueprints/current/` into `history/v[N+1]/`, clears `implementation/`, calls `progress.sh finish`. Auto-invokes next feature's `/mo-apply-impact` if queue non-empty; else asks for more TODO marks or recommends `/mo-run`. | 8 | Atomic close-out. |
+| Millwright (auto) | `/mo-complete-workflow` | Updates IMPLEMENTING → IMPLEMENTED, populates `commits:` in `requirements.md`, rotates `blueprints/current/` into `history/v[N+1]/`, archives the live `implementation/` into `history/v[N+1]/implementation/` (not deleted — preserves findings, review-context, change-summary, and diagrams as a permanent audit record), calls `progress.sh finish`. Auto-invokes next feature's `/mo-apply-impact` if queue non-empty; else asks for more TODO marks or recommends `/mo-run`. | 8 | Atomic close-out. |
 
-| Overseer | `/mo-abort-workflow [--drop-feature=...]` | Safe cancel: IMPLEMENTING → PENDING revert, clear `implementation/`, reset `active` block, preserve `blueprints/current/`. Never touches git. | recovery | Optional `--drop-feature=completed|requeue`. |
+| Overseer | `/mo-abort-workflow [--drop-feature=...]` | Safe cancel: IMPLEMENTING → PENDING revert, clear `implementation/`, reset `active` block, preserve `blueprints/current/`. Never touches git. With `--drop-feature=completed` requires real commits in `base-commit..HEAD` and transitions IMPLEMENTING todos to IMPLEMENTED (canonical stage-8 transition). | recovery | Optional `--drop-feature=completed|requeue`. |
 
 | Overseer | `/mo-resume-workflow` | Diagnostic dispatcher: reads state, prints recommended next command. No mutations. | recovery | Auto-suggestion target for unknown states inside `/mo-continue`. |
 
@@ -546,9 +584,9 @@ Each stage has a precise entry condition, work list, and exit condition. `progre
 
 | 0 | Journal populated | Overseer | `journal/` empty or stale. | Overseer signals intake done by typing `/mo-run`. |
 
-| 1 | Quest generated | Millwright via `/mo-run` | Overseer ran `/mo-run <folder...>`. | `quest/todo-list.md`, `quest/summary.md`, and `progress.md` exist. |
+| 1 | Quest generated | Millwright via `/mo-run` | Overseer ran `/mo-run <folder...>`. | New per-cycle subfolder created under `quest/`; `quest/active.md` updated to point at it; `quest/<active-slug>/{todo-list.md, summary.md, progress.md}` exist (`queue-rationale.md` is deferred to stage 1.5). |
 
-| 1.5 | Selection + ordering | Overseer + Millwright via `/mo-continue` Pre-flight Handler | Overseer marks `[x]` in `todo-list.md`. | `queue-rationale.md` written; queue reordered; `/mo-apply-impact` auto-fires. |
+| 1.5 | Selection + ordering | Overseer + Millwright via `/mo-continue` Pre-flight Handler | Overseer marks `[x]` in the active cycle's `todo-list.md`. | `quest/<active-slug>/queue-rationale.md` written; queue reordered; `/mo-apply-impact` auto-fires. |
 
 | 2 | Blueprints generated | Millwright via `/mo-apply-impact` | Pre-flight handler auto-fired. | `blueprints/current/requirements.md`, `config.md`, `diagrams/` exist. |
 
@@ -562,7 +600,7 @@ Each stage has a precise entry condition, work list, and exit condition. `progre
 
 | 7 | Review completed (transitional) | Millwright | Either no-findings path (5 → 7 directly) or with-findings path (6 → 7). | Optional diagram-refresh; `mo-complete-workflow` auto-fires. |
 
-| 8 | Completion | Millwright via `/mo-complete-workflow` | Stage 7 reached. | Blueprint rotated, `implementation/` cleared, IMPLEMENTING → IMPLEMENTED, `progress.sh finish` called. Loop back to next queue feature or wait for more TODO marks. |
+| 8 | Completion | Millwright via `/mo-complete-workflow` | Stage 7 reached. | Blueprint rotated, live `implementation/` archived into `history/v[N+1]/implementation/`, IMPLEMENTING → IMPLEMENTED, `progress.sh finish` called. Loop back to next queue feature or wait for more TODO marks. |
 
   
 
@@ -578,15 +616,19 @@ The overseer drops `.md` / `.txt` (and optionally non-text via `/mo-ingest`) int
 
 **Stage 1 — `/mo-run`.**
 
-The millwright reads the named sub-folders, summarizes their content into `quest/summary.md` (feature-indexed), generates `quest/todo-list.md` (kebab-case feature headings + per-item IDs and assignee placeholders), and scaffolds `quest/progress.md` with the queue populated and `active: null`. Per-file ingest decisions are made interactively for any non-text file detected. Sub-agent delegation is allowed for per-file summarization when files exceed thresholds.
+The millwright computes the new cycle's slug — `YYYY-MM-DD-<journal-folder-slugs-joined-with-+>` plus an optional 3-character hash collision suffix when the same slug already exists for the day — creates `quest/<slug>/`, and updates `quest/active.md` to point at it via `quest.sh start`. It then reads the named sub-folders, summarizes their content into the active cycle's `summary.md` (feature-indexed), generates the active cycle's `todo-list.md` (kebab-case feature headings + per-item IDs and assignee placeholders), and scaffolds the active cycle's `progress.md` with the queue populated and `active: null`. Only THREE files are produced at stage 1: `todo-list.md`, `summary.md`, `progress.md`. The fourth quest file (`queue-rationale.md`) is intentionally deferred to stage 1.5 — its absence under `quest/<active-slug>/` is what the dispatcher keys on to route the second `/mo-continue` to Pre-flight Step 2B. Per-file ingest decisions are made interactively for any non-text file detected. Sub-agent delegation is allowed for per-file summarization when files exceed thresholds. Older quest subfolders are left alone — they are the permanent task archive.
+
+  
+
+`/mo-run` also accepts `--archive-active`, which tells the overseer's currently in-flight cycle to be retired without finishing it. The current `quest/<active-slug>/` is preserved as-is (frozen, audit-readable), `quest/active.md` is cleared via `quest.sh end`, and a fresh cycle subfolder is created on top. Use this when the cycle has gone in a wrong direction and you want a clean restart without losing the audit trail.
 
   
 
 **Stage 1.5 — Selection + Ordering (Pre-flight Handler in `/mo-continue`).**
 
-- Sub-state A (`[x] TODO` lines exist): runs `todo.sh pend-selected`, groups PENDING items by feature, runs `progress.sh enqueue` if mid-cycle, analyzes cross-feature dependencies for ≥ 2 features, proposes a prioritized order in chat.
+- Sub-state A (`[x] TODO` lines exist in the active cycle's `todo-list.md`): runs `todo.sh pend-selected`, groups PENDING items by feature, runs `progress.sh enqueue` if mid-cycle, analyzes cross-feature dependencies for ≥ 2 features, proposes a prioritized order in chat.
 
-- Sub-state B (promotion done, `queue-rationale.md` missing): writes `queue-rationale.md`, runs `progress.sh reorder`, auto-fires `/mo-apply-impact`.
+- Sub-state B (promotion done, `quest/<active-slug>/queue-rationale.md` missing): writes `quest/<active-slug>/queue-rationale.md`, runs `progress.sh reorder`, auto-fires `/mo-apply-impact`. The dispatcher specifically keys on the absence of `queue-rationale.md` under the active cycle's subfolder to route here.
 
   
 
@@ -594,7 +636,7 @@ The millwright reads the named sub-folders, summarizes their content into `quest
 
 Calls `progress.sh activate` (pops `queue[0]` into `active`). Then follows `docs/blueprint-regeneration.md` (the *quest-driven runbook*):
 
-- Step A: read `quest/summary.md` (active feature section + cross-cutting + out-of-scope) and write `requirements.md` with `## Goals (this cycle)`, `## Planned (future cycles)`, `## Non-goals (out of scope)`. Distinction matters: Planned items WILL ship later — current implementation must leave architectural seams. Non-goals are truly out of scope and can be assumed away.
+- Step A: read `quest/<active-slug>/summary.md` (active feature section + cross-cutting + out-of-scope) and write `requirements.md` with `## Goals (this cycle)`, `## Planned (future cycles)`, `## Non-goals (out of scope)`. Distinction matters: Planned items WILL ship later — current implementation must leave architectural seams. Non-goals are truly out of scope and can be assumed away.
 
 - Step B: scan `.claude/skills/` and `.claude/rules/`, write `config.md`'s auto-block (≤ 10 entries / ≤ 2 lines each, three sections: `## Skills`, `## Rules`, `## Load on demand`), pre-fill `## GIT BRANCH` from HEAD if non-trunk, preserve `## Overseer Additions` verbatim.
 
@@ -678,7 +720,7 @@ Pure launcher:
 
 2. Set `sub-flow=none`, `overseer-review-completed=true`; advance 6 → 7.
 
-3. Optional diagram refresh: if review-loop commits exist, prompt y/n to re-run `/mo-draw-diagrams` before stage 8 deletes diagrams.
+3. Optional diagram refresh: if review-loop commits exist, prompt y/n to re-run `/mo-draw-diagrams` before stage 8 archives the live `implementation/diagrams/` (the refreshed render is what gets preserved into history).
 
 4. Auto-fire `/mo-complete-workflow`.
 
@@ -690,17 +732,15 @@ Pure launcher:
 
 2. `commits.sh populate-requirements <feature>` writes `commits:` field in `requirements.md` frontmatter (the canonical link between requirements and implementation).
 
-3. `blueprints.sh rotate <feature> --reason-kind completion --reason-summary "..."` moves `current/*` into `history/v[N+1]/` and writes `reason.md`.
+3. `blueprints.sh rotate <feature> --reason-kind completion --reason-summary "..."` moves `current/*` into `history/v[N+1]/`, writes `reason.md`, and **archives the live `implementation/` folder alongside as `history/v[N+1]/implementation/`** (overseer-review.md, review-context.md, change-summary.md, diagrams/ all preserved). This is an archive, not a delete: every finding (including any deferred `status: open` ones), the review-context snapshot, the change-summary, and the implementation diagrams survive as part of the rotated version. The rotated history version therefore contains: `requirements.md`, `config.md`, `diagrams/`, `primer.md`, `reason.md`, AND `implementation/`.
 
-4. Delete `implementation/overseer-review.md`, `review-context.md`, `change-summary.md`, `diagrams/`.
+4. `progress.sh finish` (active.feature → completed; active = null).
 
-5. `progress.sh finish` (active.feature → completed; active = null).
+5. If `queue` non-empty: announce next feature and auto-invoke `/mo-apply-impact` (loop back to stage 2).
 
-6. If `queue` non-empty: announce next feature and auto-invoke `/mo-apply-impact` (loop back to stage 2).
+If `queue` empty AND `[ ] TODO` items remain in the active cycle's `todo-list.md`: ask overseer to mark next batch and type `/mo-continue` (re-enters stage 1.5 via `progress.sh enqueue`).
 
-If `queue` empty AND `[ ] TODO` items remain: ask overseer to mark next batch and type `/mo-continue` (re-enters stage 1.5 via `progress.sh enqueue`).
-
-If `queue` empty AND no `[ ] TODO`: cycle complete; recommend `/mo-run` for a new cycle.
+If `queue` empty AND no `[ ] TODO`: cycle complete; recommend `/mo-run` for a new cycle (which will create a new dated subfolder under `quest/`, leaving the just-completed one preserved as a permanent task archive).
 
   
 
@@ -752,13 +792,15 @@ All commands live under `commands/` as Markdown files with YAML frontmatter (`de
 
   
 
-#### `/mo-run <folder1> [<folder2> ...]`
+#### `/mo-run <folder1> [<folder2> ...] [--archive-active]`
 
 - **Invocation**: overseer; once per cycle.
 
-- **Behavior**: Step 0 preflight via `doctor.sh --preflight`; Step 1 parse arguments; Step 2 detect non-text files and run per-file ingest decision flow; Step 3+ generate `quest/todo-list.md` (per-feature checklist with `<feature>-NNN` IDs), `quest/summary.md` (feature-indexed digest), and `quest/progress.md` with queue populated. Optionally writes `queue-rationale.md` if dependencies were analyzed at this stage (or defers to stage 1.5).
+- **Behavior**: Step 0 preflight via `doctor.sh --preflight` (now includes a `git rev-parse --verify HEAD` check, so a fresh repo with zero commits fails the preflight); Step 1 parse arguments; Step 2 detect non-text files and run per-file ingest decision flow; Step 3 compute the new cycle's slug — `YYYY-MM-DD-<journal-folder-slugs-joined-with-+>` plus an optional 3-character hash collision suffix when the same slug already exists under `quest/` for the day — create `quest/<slug>/`, and call `quest.sh start <slug>` to point `quest/active.md` at it; Step 4 generate `quest/<active-slug>/todo-list.md` (per-feature checklist with `<feature>-NNN` IDs), `quest/<active-slug>/summary.md` (feature-indexed digest), and `quest/<active-slug>/progress.md` with queue populated. `queue-rationale.md` is **not** written here — it is deferred to stage 1.5 by design.
 
-- **Post-conditions**: quest files + `progress.md` populated. `active=null`. Branch deferred to stage 2.
+- **`--archive-active` flag**: if a cycle is already in flight, retire it without finishing. The current `quest/<active-slug>/` is preserved untouched (frozen as a permanent record), `quest/active.md` is cleared via `quest.sh end`, and a fresh cycle subfolder is created on top. Use this when the cycle has gone in a wrong direction and you want a clean restart without losing the audit trail. Without this flag, attempting `/mo-run` while a cycle is active is refused.
+
+- **Post-conditions**: `quest/active.md` points at the new slug; `quest/<active-slug>/{todo-list.md, summary.md, progress.md}` exist; `progress.md.active=null`. Branch deferred to stage 2. Older `quest/*/` subfolders remain untouched.
 
   
 
@@ -812,7 +854,7 @@ All commands live under `commands/` as Markdown files with YAML frontmatter (`de
 
 - **Invocation**: auto-fired on stage-7 clean exit. Manually invokable for recovery.
 
-- **Behavior**: IMPLEMENTING → IMPLEMENTED via `todo.sh bulk-transition`; populates `commits:` field in `requirements.md` via `commits.sh populate-requirements`; rotates `blueprints/current/` into `history/v[N+1]/` via `blueprints.sh rotate --reason-kind completion`; clears `implementation/`; `progress.sh finish`. Loops to next feature (auto-fires `/mo-apply-impact`) if queue non-empty; else asks for more TODO marks or recommends `/mo-run`.
+- **Behavior**: IMPLEMENTING → IMPLEMENTED via `todo.sh bulk-transition`; populates `commits:` field in `requirements.md` via `commits.sh populate-requirements`; rotates `blueprints/current/` into `history/v[N+1]/` via `blueprints.sh rotate --reason-kind completion`, **archiving the live `implementation/` folder alongside as `history/v[N+1]/implementation/`** (overseer-review.md, review-context.md, change-summary.md, diagrams/ all preserved as a permanent audit record — not deleted); `progress.sh finish`. Loops to next feature (auto-fires `/mo-apply-impact`) if queue non-empty; else asks for more TODO marks or recommends `/mo-run`.
 
   
 
@@ -852,9 +894,11 @@ The single touchpoint at every overseer gate. Reads `progress.md` and dispatches
 
 #### `/mo-abort-workflow [--drop-feature=completed|requeue]`
 
-- Reverts IMPLEMENTING → PENDING in `todo-list.md`. Deletes `implementation/*`. `progress.sh reset` (keeps feature + branch, clears base-commit + execution-mode + completion flags, sub-flow=none, current-stage=2). Preserves `blueprints/current/`. Never touches git.
+- Reverts IMPLEMENTING → PENDING in the active cycle's `todo-list.md`. Deletes `implementation/*` (an aborted cycle has no committed work to archive). `progress.sh reset` (keeps feature + branch, clears base-commit + execution-mode + completion flags, sub-flow=none, current-stage=2). Preserves `blueprints/current/`. Never touches git.
 
-- `--drop-feature=completed` → archives to `completed`. `--drop-feature=requeue` → appends to end of queue.
+- `--drop-feature=completed` → archives to `completed`. **Requires** real commits in `base-commit..HEAD` (refuses otherwise — you can't claim a feature was completed without commits) and transitions IMPLEMENTING todos to IMPLEMENTED (the canonical stage-8 transition) instead of leaving them in PENDING.
+
+- `--drop-feature=requeue` → appends to end of queue (IMPLEMENTING todos revert to PENDING).
 
   
 
@@ -868,7 +912,7 @@ The single touchpoint at every overseer gate. Reads `progress.md` and dispatches
 
 - Manual implementation-driven blueprint refresh (mid-cycle, stage 3+). Rotates `current/` into history; regenerates `requirements.md` Goals + diagrams from `change-summary.md` + diff hunks; copies Planned / Non-goals / `todo-item-ids` / `todo-list-id` verbatim from previous history version; preserves `## GIT BRANCH` and `## Overseer Additions` via `blueprints.sh preserve-overseer-sections`; calls `review.sh sync-refs` to re-point in-flight `requirements-id` references.
 
-- **Deliberately NOT inputs**: `quest/todo-list.md`, `quest/summary.md`, `journal/`. Mid-cycle refreshes are reverse-engineered from the implementation; intake artifacts don't drift after stage 1.5.
+- **Deliberately NOT inputs**: `quest/<active-slug>/todo-list.md`, `quest/<active-slug>/summary.md`, `journal/`. Mid-cycle refreshes are reverse-engineered from the implementation; intake artifacts don't drift after stage 1.5.
 
   
 
@@ -940,9 +984,9 @@ A single `PostToolUse` hook matched on `Write|Edit`. Reads the tool-call JSON on
 
 Coverage policy:
 
-- **Validated**: `quest/{progress, todo-list, summary, queue-rationale}.md`, `blueprints/current/{requirements, config, primer}.md`, `implementation/{overseer-review, review-context, change-summary}.md`, `blueprints/history/v*/reason.md`.
+- **Validated**: `quest/<active-slug>/{progress, todo-list, summary, queue-rationale}.md`, `blueprints/current/{requirements, config, primer}.md`, `implementation/{overseer-review, review-context, change-summary}.md`, `blueprints/history/v*/reason.md`.
 
-- **Skipped (audit archive)**: other files under `blueprints/history/v*/` — they were already validated when in `current/` and are immutable post-rotation.
+- **Skipped (audit archive)**: other files under `blueprints/history/v*/` (including `history/v*/implementation/*` archived at stage 8) and older `quest/<old-slug>/*` subfolders — they were already validated when live and are immutable post-rotation/archival.
 
   
 
@@ -1030,9 +1074,13 @@ todo-list.md.tmpl
 
 | `frontmatter.sh` | Read / write / init / validate YAML frontmatter. Subcommands: `init`, `get`, `set`, `validate`. |
 
-| `progress.sh` | Manage `quest/progress.md` (the central state file). Subcommands: `init`, `activate`, `finish`, `requeue`, `reset`, `reorder`, `enqueue`, `get-active`, `queue-remaining`, `get`, `set`, `advance`. Uses Python heredocs for safe YAML mutation. |
+| `progress.sh` | Manage the active cycle's `progress.md` (resolved via `quest.sh dir`). Subcommands: `init`, `activate`, `finish`, `requeue`, `reset`, `reorder`, `enqueue`, `get-active`, `queue-remaining`, `get`, `set`, `advance`. Uses Python heredocs for safe YAML mutation. |
 
-| `todo.sh` | Manage `quest/todo-list.md`. Subcommands: `set-state`, `bulk-transition` (with optional `--feature`), `pend-selected`, `list <state>` (with optional `--feature`). Enforces state-machine paths and assignee invariants. |
+| `todo.sh` | Manage the active cycle's `todo-list.md` (resolved via `quest.sh dir`). Subcommands: `set-state`, `bulk-transition` (with optional `--feature`), `pend-selected`, `list <state>` (with optional `--feature`). Enforces state-machine paths and assignee invariants. |
+
+| `quest.sh` | Manage the active-quest pointer at `quest/active.md` and resolve the active cycle's directory for every other script. Subcommands: `slug` (print active slug or empty), `start <slug>` (write `quest/active.md` and create the subfolder if needed), `end` (clear `quest/active.md`, leaving the subfolder in place), `init-pointer` (idempotent: create `quest/active.md` if missing), `current` (print active slug or fail), `dir` (print absolute path of `quest/<active-slug>/` or fail), `has-active` (exit 0 if pointer set, 1 otherwise), `status` (human-readable diagnostic), `list` (enumerate every `quest/<slug>/` subfolder as the task archive index). |
+
+| `data-root.sh` | Resolve the data root path. Reads `MO_DATA_ROOT` (explicit shell override) first, then `CLAUDE_PLUGIN_USER_CONFIG_data_root` (Claude Code's injected `userConfig` value), defaulting to `millwright-overseer`. Every other script sources this rather than hardcoding the path so the same code works in default and `.millwright-overseer` (hidden) modes interchangeably. |
 
 | `blueprints.sh` | Manage `workflow-stream/<feature>/blueprints/`. Subcommands: `ensure-current`, `rotate --reason-kind --reason-summary`, `preserve-overseer-sections`. Rotation kinds: `completion`, `spec-update`, `re-spec-cascade`, `re-plan-cascade`, `manual`. |
 
@@ -1042,9 +1090,9 @@ todo-list.md.tmpl
 
 | `ingest.sh` | Convert non-text journal files to sibling `.md`. Routes by extension (docling for documents, stub for images / short PDFs). |
 
-| `doctor.sh` | Dependency detection and reporting. Outputs JSON or human-readable. `--preflight` mode for fast checks. |
+| `doctor.sh` | Dependency detection and reporting. Outputs JSON or human-readable. `--preflight` mode for fast checks; the preflight now runs `git rev-parse --verify HEAD` (not just `--is-inside-work-tree`), so a fresh repo with zero commits fails the preflight rather than crashing later when stage 3 tries to capture `base-commit`. |
 
-| `internal/common.sh` | Shared helpers: `mo_die`, `mo_info`, `mo_progress_file`, `mo_fm_get`, `mo_render_template`. |
+| `internal/common.sh` | Shared helpers: `mo_die`, `mo_info`, `mo_progress_file` (resolves through `quest.sh dir`), `mo_fm_get`, `mo_render_template`. `mo_render_template` YAML-encodes any value substituted into a YAML-frontmatter slot (e.g. `summary:` in `reason.md.tmpl`) so a value containing `:` or `#` no longer breaks parsing — single-line strings get quoted as needed; multi-line strings are emitted as a literal block scalar. |
 
 | `internal/validate-frontmatter.sh` | Run by the PostToolUse hook. Loads schema, validates `.md` frontmatter, exits non-zero on failure. |
 
@@ -1152,7 +1200,7 @@ The git branch is owned by the overseer end-to-end. Mo-workflow never creates, d
 
 | --- | --- | --- |
 
-| Stage 8 (`mo-complete-workflow`) | `completion` | n/a — `current/` becomes empty |
+| Stage 8 (`mo-complete-workflow`) | `completion` | n/a — `current/` becomes empty; the live `implementation/` is archived alongside as `history/v[N+1]/implementation/` |
 
 | `/mo-continue` post-chain (stage 4) drift check (overseer-supplied reason) | `manual` (via `/mo-update-blueprint`) | implementation-driven |
 
@@ -1216,9 +1264,9 @@ Iterations are nested under `## Iteration N` headers. IDs stay stable across ite
 
 | --- | --- | --- |
 
-| 3 (planning) | `blueprints/current/primer.md` | `requirements.md`, `config.md`, `summary.md` (active feature section), `todo-list.md` |
+| 3 (planning) | `blueprints/current/primer.md` | `requirements.md`, `config.md`, `quest/<active-slug>/summary.md` (active feature section), `quest/<active-slug>/todo-list.md` |
 
-| 6 (review) | `implementation/review-context.md` + `implementation/overseer-review.md` | `requirements.md`, `config.md`, `summary.md` (active feature section), `blueprints/current/primer.md` |
+| 6 (review) | `implementation/review-context.md` + `implementation/overseer-review.md` | `requirements.md`, `config.md`, `quest/<active-slug>/summary.md` (active feature section), `blueprints/current/primer.md` |
 
   
 
@@ -1228,7 +1276,7 @@ Properties:
 
 - Primers are **overwritten on regeneration** by their writer.
 
-- Primers are **rotated with their parent folder** (`primer.md` rotates with `blueprints/current/`; `review-context.md` is cleaned at stage 8 / abort).
+- Primers are **rotated with their parent folder** (`primer.md` rotates with `blueprints/current/`; `review-context.md` is archived into `history/v[N+1]/implementation/` at stage 8, cleaned only on abort).
 
 - `review.sh sync-refs` keeps `requirements-id` references live across rotations.
 
@@ -1326,9 +1374,19 @@ A single feature, brainstorming planning, brainstorming review, with one finding
 
 [Overseer] Types: /mo-run auth-meeting
 
-[Millwright] Runs doctor preflight; generates quest/todo-list.md, summary.md, progress.md.
+[Millwright] Runs doctor preflight (including git rev-parse --verify HEAD);
 
-[Overseer] Edits todo-list.md: marks AUTH-001 and AUTH-002 with [x] (emin).
+computes slug 2026-04-27-auth-meeting; creates quest/2026-04-27-auth-meeting/;
+
+quest.sh start writes quest/active.md → 2026-04-27-auth-meeting;
+
+generates quest/2026-04-27-auth-meeting/{todo-list.md, summary.md, progress.md}.
+
+(queue-rationale.md is intentionally NOT written here; it's deferred to stage 1.5.)
+
+[Overseer] Edits quest/2026-04-27-auth-meeting/todo-list.md:
+
+marks AUTH-001 and AUTH-002 with [x] (emin).
 
 [Overseer] Types: /mo-continue # 1.5 step A
 
@@ -1336,7 +1394,9 @@ A single feature, brainstorming planning, brainstorming review, with one finding
 
 [Overseer] Types: /mo-continue # 1.5 step B (accept)
 
-[Millwright] Writes queue-rationale.md; progress.sh reorder; auto-fires /mo-apply-impact.
+[Millwright] Writes quest/2026-04-27-auth-meeting/queue-rationale.md;
+
+progress.sh reorder; auto-fires /mo-apply-impact.
 
 [Millwright] progress.sh activate (auth → active block).
 
@@ -1422,15 +1482,23 @@ todo.sh bulk-transition IMPLEMENTING IMPLEMENTED --feature auth;
 
 commits.sh populate-requirements auth (writes commits: field);
 
-blueprints.sh rotate auth --reason-kind completion (current/* → history/v1/);
+blueprints.sh rotate auth --reason-kind completion
 
-deletes implementation/*;
+(current/* → history/v1/, AND archives live implementation/ as
+
+history/v1/implementation/ — overseer-review.md, review-context.md,
+
+change-summary.md, diagrams/ all preserved as a permanent audit record);
 
 progress.sh finish (auth → completed, active = null).
 
-Queue is empty; checks todo-list.md for unmarked [ ] TODO.
+Queue is empty; checks the active cycle's todo-list.md for unmarked [ ] TODO.
 
-None found; recommends /mo-run for next cycle.
+None found; recommends /mo-run for the next cycle (which will create a
+
+NEW dated subfolder under quest/, leaving quest/2026-04-27-auth-meeting/
+
+preserved permanently as part of the task archive).
 
 ```
 
@@ -1462,7 +1530,9 @@ What the millwright did automatically: `mo-apply-impact`, `mo-plan-implementatio
 
 - **Canonicalize** — convert a free-form finding sentence into a structured `### IR-NNN` block.
 
-- **Cycle** — the lifespan of a single `quest/` cohort, from `/mo-run` to all features completed.
+- **Cycle** — the lifespan of a single `quest/<slug>/` cohort, from `/mo-run` to all features completed. The slug is `YYYY-MM-DD-<journal-folder-slugs-joined-with-+>` plus an optional 3-character hash collision suffix; older cycle subfolders are preserved permanently as a task archive.
+
+- **Active cycle / active slug** — the cycle named by `quest/active.md`. All cycle-scoped scripts and commands resolve their working files (`todo-list.md`, `summary.md`, `progress.md`, `queue-rationale.md`) under `quest/<active-slug>/` via `quest.sh dir`.
 
 - **Direct mode** — planning-mode or review-mode that keeps work in the main session instead of spawning a Skill.
 
@@ -1484,7 +1554,7 @@ What the millwright did automatically: `mo-apply-impact`, `mo-plan-implementatio
 
 - **Primer** — a compact derived snapshot file (`primer.md`, `review-context.md`) that bootstraps a long-running stage.
 
-- **Quest** — the cycle-wide working state under `quest/`.
+- **Quest** — the cycle-wide working state under `quest/<active-slug>/`, plus the permanent archive of past cycles under `quest/<old-slug>/` siblings, plus the `quest/active.md` pointer file at the top level of `quest/`.
 
 - **Re-spec / re-plan / re-implement / fix** — the four scope tiers for a finding.
 

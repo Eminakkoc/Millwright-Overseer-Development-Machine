@@ -62,6 +62,7 @@ error: no journal folders specified. Usage:
 Before doing any journal scanning or generation, verify there is no quest cycle in flight (or honor `--archive-active` to retire the existing one).
 
 ```bash
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 if existing_slug="$($CLAUDE_PLUGIN_ROOT/scripts/quest.sh current 2>/dev/null)"; then
   if [[ -n "${archive_active:-}" ]]; then
     $CLAUDE_PLUGIN_ROOT/scripts/quest.sh end
@@ -69,7 +70,7 @@ if existing_slug="$($CLAUDE_PLUGIN_ROOT/scripts/quest.sh current 2>/dev/null)"; 
   else
     cat >&2 <<EOF
 error: a quest cycle is already active (slug=$existing_slug). The cycle's subfolder
-is at millwright-overseer/quest/$existing_slug/ and contains the in-flight
+is at $data_root/quest/$existing_slug/ and contains the in-flight
 todo-list.md, summary.md, progress.md (plus queue-rationale.md if stage 1.5 has
 already confirmed the queue order).
 

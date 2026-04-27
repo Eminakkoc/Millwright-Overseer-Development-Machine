@@ -16,10 +16,11 @@ Before following these steps, the caller must have:
 
 ## Step A — Generate `requirements.md` (AI work)
 
-Resolve the active cycle's quest folder once and reuse the path:
+Resolve the active cycle's quest folder and the workflow data root once and reuse them in the rest of this runbook:
 
 ```bash
 quest_dir="$($CLAUDE_PLUGIN_ROOT/scripts/quest.sh dir)"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 ```
 
 Read `$quest_dir/todo-list.md` and `$quest_dir/summary.md` (the journal digest from stage 1). Do NOT read `journal/` directly — the cycle's `summary.md` is the authoritative digest; stage 2 is purely quest-driven.
@@ -35,7 +36,7 @@ planned_ids="$($CLAUDE_PLUGIN_ROOT/scripts/todo.sh list TODO --feature "$active_
 Create the file. `TODO_ITEM_IDS` must be a comma-separated list — `$active_item_ids` arrives from `todo.sh list` as newline-separated, so reshape it before substituting:
 
 ```bash
-dest="millwright-overseer/workflow-stream/$active_feature/blueprints/current/requirements.md"
+dest="$data_root/workflow-stream/$active_feature/blueprints/current/requirements.md"
 todo_list_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get \
   "$quest_dir/todo-list.md" id)"
 todo_item_ids_csv="$(printf '%s\n' "$active_item_ids" | paste -sd, -)"
@@ -94,7 +95,7 @@ When uncertain whether something is relevant: prefer `## Load on demand` over `#
 ```bash
 requirements_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get \
   "$dest" id)"
-config_dest="millwright-overseer/workflow-stream/$active_feature/blueprints/current/config.md"
+config_dest="$data_root/workflow-stream/$active_feature/blueprints/current/config.md"
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init config "$config_dest" \
   "REQUIREMENTS_ID=$requirements_id"
 ```

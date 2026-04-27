@@ -58,8 +58,9 @@ echo "Blueprints archived into history/v${version}"
 Stage 4 rotated `blueprints/current/` into `blueprints/history/v${version}/`. The just-finished implementation artifacts (`overseer-review.md`, `review-context.md`, `change-summary.md`, and `diagrams/`) are part of the same audit record, so move them into a sibling `implementation/` subfolder under the new history version. This preserves every finding (including any `status: open` ones the overseer chose to defer) and the diagrams of `base-commit..HEAD` for posterity. The live `implementation/` folder is then empty and the next feature's stage-2 launcher re-creates children there.
 
 ```bash
-impl_dir="millwright-overseer/workflow-stream/$active_feature/implementation"
-archive_dir="millwright-overseer/workflow-stream/$active_feature/blueprints/history/v${version}/implementation"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+impl_dir="$data_root/workflow-stream/$active_feature/implementation"
+archive_dir="$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/implementation"
 mkdir -p "$archive_dir"
 
 # Move each artifact if it exists. Using `mv -n` keeps it idempotent if the

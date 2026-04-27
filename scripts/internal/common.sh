@@ -13,16 +13,52 @@ else
 fi
 export MO_PLUGIN_ROOT
 
-# Data root. Precedence:
-# 1. $MO_DATA_ROOT (set by command wrapper or user)
-# 2. userConfig.data_root (read from the plugin's user config, if available)
-# 3. default: ./millwright-overseer relative to the current working directory
+# Data root. Precedence (each step short-circuits if it produces a value):
+#
+# 1. $MO_DATA_ROOT — explicit per-invocation override. Set by command wrappers,
+#    by the user in their shell, or by integration scripts. Highest precedence
+#    because it is intentional and per-invocation.
+#
+# 2. $CLAUDE_PLUGIN_USER_CONFIG_data_root — set by the Claude Code plugin
+#    runtime when the user configures `userConfig.data_root` at install time
+#    (see plugin.json). The convention `CLAUDE_PLUGIN_USER_CONFIG_<key>` is
+#    the documented Claude Code plugin pattern for exposing user config to
+#    subprocess scripts. If your runtime does not set this var, `MO_DATA_ROOT`
+#    or the default is used instead.
+#
+# 3. ./millwright-overseer relative to the current working directory
+#    (default when nothing else is set).
+#
+# Resolved values may be relative or absolute. They are concatenated with the
+# absolute project working directory when a relative value is returned, so
+# every call site can rely on the result being absolute.
 mo_data_root() {
   if [[ -n "${MO_DATA_ROOT:-}" ]]; then
-    echo "$MO_DATA_ROOT"
+    _mo_data_root_resolve "$MO_DATA_ROOT"
+    return
+  fi
+  if [[ -n "${CLAUDE_PLUGIN_USER_CONFIG_data_root:-}" ]]; then
+    _mo_data_root_resolve "$CLAUDE_PLUGIN_USER_CONFIG_data_root"
     return
   fi
   echo "${PWD}/millwright-overseer"
+}
+
+# Resolve a possibly-relative data root to an absolute path. Internal helper.
+_mo_data_root_resolve() {
+  local val="$1"
+  if [[ "$val" = /* ]]; then
+    echo "$val"
+  else
+    echo "${PWD}/${val}"
+  fi
+}
+
+# Print the basename of the data root — used by the validate-on-write hook
+# to test whether a Write/Edit landed under the configured workspace folder.
+# Falls back to "millwright-overseer" when nothing is set.
+mo_data_root_segment() {
+  basename "$(mo_data_root)"
 }
 
 # Paths the millwright-overseer-development-machine operates on — always resolve via these helpers.

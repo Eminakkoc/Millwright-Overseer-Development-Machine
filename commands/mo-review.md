@@ -26,8 +26,9 @@ There is no AI-driven review pass. Findings are authored by the overseer (during
 ### Step 1 — Resolve inputs
 
 ```bash
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active)"
-ov_file="millwright-overseer/workflow-stream/$active_feature/implementation/overseer-review.md"
+ov_file="$data_root/workflow-stream/$active_feature/implementation/overseer-review.md"
 [[ -f "$ov_file" ]] || { echo "error: overseer-review.md not found at $ov_file" >&2; exit 1; }
 
 open_ids="$($CLAUDE_PLUGIN_ROOT/scripts/review.sh list-open "$active_feature")"
@@ -50,8 +51,8 @@ fi
 Compose a compact snapshot of the context the brainstorming review session needs at every loop trip — active scope, goals, implemented surface, and open-findings cheat sheet. The chain stays in this snapshot for the common case and drops into canonical files only when a finding requires deeper context.
 
 ```bash
-ctx_dest="millwright-overseer/workflow-stream/$active_feature/implementation/review-context.md"
-requirements_file="millwright-overseer/workflow-stream/$active_feature/blueprints/current/requirements.md"
+ctx_dest="$data_root/workflow-stream/$active_feature/implementation/review-context.md"
+requirements_file="$data_root/workflow-stream/$active_feature/blueprints/current/requirements.md"
 requirements_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$requirements_file" id)"
 # frontmatter.sh init overwrites — safe to re-run if /mo-review is invoked again.
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init review-context "$ctx_dest" \
@@ -92,24 +93,24 @@ Then dispatch on the value:
 
 ### Step 3a — Brainstorming mode: invoke the Skill
 
-Use the `Skill` tool to invoke the `brainstorming` skill with the following primer message. Substitute `<$active_feature>` with the actual feature name. **The Skill is invoke-and-hand-off, not invoke-and-block** — same as `/mo-plan-implementation` at stage 3. The brainstorming session runs in an isolated interactive flow driven by the overseer; `mo-review` returns immediately after the Skill is invoked.
+Use the `Skill` tool to invoke the `brainstorming` skill with the following primer message. Substitute `<$active_feature>` with the actual feature name. Substitute `<$data_root>` with the resolved data root (e.g. `millwright-overseer` by default; whatever `$data_root` evaluates to in this command's shell context). **The Skill is invoke-and-hand-off, not invoke-and-block** — same as `/mo-plan-implementation` at stage 3. The brainstorming session runs in an isolated interactive flow driven by the overseer; `mo-review` returns immediately after the Skill is invoked.
 
 ```
 I'm addressing overseer review findings on the "<$active_feature>" feature. The implementation already exists in `base-commit..HEAD`; your job is to address the open findings the overseer wrote, ask for approval, and loop if more findings are added.
 
 **Context loading order** (read in this order; only escalate when a gap appears):
 
-1. **Required first read** — millwright-overseer/workflow-stream/<$active_feature>/implementation/review-context.md
+1. **Required first read** — <$data_root>/workflow-stream/<$active_feature>/implementation/review-context.md
    Compact snapshot of active scope, goals, implemented surface, and open-findings cheat sheet. For most loop trips this plus overseer-review.md is all you need.
 
-2. **Canonical findings (always)** — millwright-overseer/workflow-stream/<$active_feature>/implementation/overseer-review.md
+2. **Canonical findings (always)** — <$data_root>/workflow-stream/<$active_feature>/implementation/overseer-review.md
    The source of truth for findings. Re-read on `go again` to pick up any new entries the overseer added mid-session.
 
 3. **On demand** — only if review-context.md leaves a gap on a specific topic:
-   - millwright-overseer/workflow-stream/<$active_feature>/blueprints/current/requirements.md — full goals / planned / non-goals
-   - millwright-overseer/workflow-stream/<$active_feature>/blueprints/current/config.md — full skills/rules + GIT BRANCH + Overseer Additions
-   - millwright-overseer/workflow-stream/<$active_feature>/blueprints/current/primer.md — original stage-3 launch primer
-   - millwright-overseer/quest/<active-slug>/summary.md — feature-indexed journal digest for the active cycle (the slug is in `quest/active.md`). Read `## Cross-cutting constraints` and `## Feature: <$active_feature>` first
+   - <$data_root>/workflow-stream/<$active_feature>/blueprints/current/requirements.md — full goals / planned / non-goals
+   - <$data_root>/workflow-stream/<$active_feature>/blueprints/current/config.md — full skills/rules + GIT BRANCH + Overseer Additions
+   - <$data_root>/workflow-stream/<$active_feature>/blueprints/current/primer.md — original stage-3 launch primer
+   - <$data_root>/quest/<active-slug>/summary.md — feature-indexed journal digest for the active cycle (the slug is in `quest/active.md`). Read `## Cross-cutting constraints` and `## Feature: <$active_feature>` first
 
 **Work definition** (open findings to address):
 Each open finding (`status: open`) is a block under `## Implementation Review` (or `## Iteration N` on later passes) in overseer-review.md with: id (IR-NNN), severity, scope (hint), details.

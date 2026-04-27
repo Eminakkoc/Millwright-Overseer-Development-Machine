@@ -86,7 +86,8 @@ esac
 ### Step 4 — Clear implementation
 
 ```bash
-impl_dir="millwright-overseer/workflow-stream/$active_feature/implementation"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+impl_dir="$data_root/workflow-stream/$active_feature/implementation"
 rm -rf "$impl_dir"/diagrams
 rm -f "$impl_dir"/overseer-review.md
 rm -f "$impl_dir"/review-context.md
