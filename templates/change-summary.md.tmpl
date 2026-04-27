@@ -1,0 +1,56 @@
+---
+id: {{UUID}}
+requirements-id: {{REQUIREMENTS_ID}}
+feature: {{FEATURE}}
+base-commit: "{{BASE_COMMIT}}"
+head: "{{HEAD}}"
+---
+
+# Change summary — {{FEATURE}}
+
+Cached analysis of `{{BASE_COMMIT}}..{{HEAD}}`. Shared by `mo-generate-implementation-diagrams` and `/mo-update-blueprint` so the bounded codebase reads only happen once per commit-range. The `base-commit` + `head` pair in frontmatter is the cache key — consumers call `commits.sh change-summary-fresh <feature>` to check it before reusing.
+
+<!-- Generated artifact — written by whichever consumer first runs against this commit
+     range, refreshed when the range changes. Treat the diff (`git diff base..HEAD`)
+     and the codebase as the source of truth; this file is a synthesized index. -->
+
+## Range
+
+- base-commit: `{{BASE_COMMIT}}`
+- head: `{{HEAD}}`
+- commit count: <fill from `git rev-list --count base..HEAD`>
+
+## Changed files
+
+<!-- Output of `commits.sh changed-files <feature>`, grouped by area. Format:
+     - <area or top-level dir>:
+       - <status> <path> (+adds/-dels): <one-line purpose where obvious>
+       - …
+     `status` letters: A = added, M = modified, D = deleted, R = renamed, C = copied.
+     Binary diffs show "-/-" for adds/dels.
+     Group by directory, layer, or feature concern — pick whichever makes the change
+     legible. Do NOT paste full diffs. -->
+
+## Detected entrypoints
+
+<!-- Public-surface entrypoints introduced or modified by this range:
+     - new HTTP routes / RPC handlers / GraphQL resolvers
+     - new CLI commands / scheduled jobs / queue consumers
+     - new exports from public modules
+     One bullet per entrypoint with `<path>:<symbol>` reference.
+     Skip the section if no public surface changed. -->
+
+## Suspected flows
+
+<!-- End-to-end flows the change enables — rough list, validated when the diagram
+     pass renders sequence diagrams. Each entry: "<flow name>: <one-line trace>". -->
+
+## Omitted from analysis
+
+<!-- Files in the changed set that were intentionally NOT inspected for content,
+     listed so reviewers can spot blind spots. Default omissions:
+     - generated/build/dist output
+     - vendored dependencies
+     - lock files (`*.lock`, `package-lock.json`, etc.)
+     - large binaries
+     - `.svg` (read the `.puml` source if a diagram changed) -->

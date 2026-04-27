@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# doctor.sh — check millwright-overseer-development-machine dependencies and emit a structured report.
+#
+# Usage:
+#   doctor.sh                      # full check, JSON output, exit 0|1|2
+#   doctor.sh --preflight          # fast check of required deps only; exit 0 if all ok, 1 if any missing
+#   doctor.sh --format=human       # human-readable summary (for interactive use)
+#
+# Exit codes:
+#   0 — all required deps present (may have warnings for optional)
+#   1 — optional deps missing (warnings only)
+#   2 — required deps missing (errors)
+
+set -uo pipefail
+source "$(dirname "$0")/internal/common.sh"
+
+format="json"
+preflight=0
+for arg in "$@"; do
+  case "$arg" in
+    --preflight)     preflight=1 ;;
+    --format=human)  format="human" ;;
+    --format=json)   format="json" ;;
+    -h|--help)
+      sed -n '2,12p' "$0"
+      exit 0
+      ;;
+  esac
+done
+
+# ---------- OS detection ---------------------------------------------------
+os="unknown"
+case "$(uname -s)" in
+  Darwin) os="darwin" ;;
+  Linux)
+    if [[ -r /etc/os-release ]]; then
+      . /etc/os-release
+      case "${ID:-}" in
+        ubuntu|debian) os="linux-apt" ;;
+        arch|manjaro)  os="linux-pacman" ;;
+        fedora|rhel|centos) os="linux-dnf" ;;
+        alpine)        os="linux-apk" ;;
+        *)             os="linux-generic" ;;
+      esac
+    else
+      os="linux-generic"
+    fi
+    ;;
+  MINGW*|MSYS*|CYGWIN*) os="windows" ;;
+esac
+
+# ---------- Check primitives ----------------------------------------------
+results=()        # array of JSON objects
+worst_severity=0  # 0=ok, 1=warn, 2=error
+
+record() {
+  # record <name> <kind: cli|pymod|plugin|env> <required: true|false> <present: true|false> <version> <install_hints_json>
+  local name="$1" kind="$2" required="$3" present="$4" version="$5" hints="$6"
+  local severity=0
+  if [[ "$present" == "false" ]]; then
+    if [[ "$required" == "true" ]]; then severity=2; else severity=1; fi
+  fi
+  (( severity > worst_severity )) && worst_severity=$severity
+
+  # Produce a JSON object.
+  local json
+  json=$(python3 - "$name" "$kind" "$required" "$present" "$version" "$hints" "$severity" <<'PYEOF'
+import sys, json
+name, kind, req, pres, version, hints_json, sev = sys.argv[1:]
+print(json.dumps({
+    "name": name,
+    "kind": kind,
+    "required": req == "true",
+    "present": pres == "true",
+    "version": version,
+    "install_hints": json.loads(hints_json) if hints_json.strip() else {},
+    "severity": {0:"ok",1:"warn",2:"error"}[int(sev)],
+}))
+PYEOF
+)
+  results+=("$json")
+}
+
+check_cli() {
+  # check_cli <binary> <required> <hints_json>
+  local bin="$1" required="$2" hints="$3"
+  if command -v "$bin" >/dev/null 2>&1; then
+    local version
+    version="$("$bin" --version 2>&1 | head -1 | tr '\n' ' ' | sed 's/"/\\"/g' || echo "unknown")"
+    record "$bin" cli "$required" true "$version" "$hints"
+  else
+    record "$bin" cli "$required" false "" "$hints"
+  fi
+}
+
+check_pymod() {
+  # check_pymod <module> <required> <hints_json>
+  local mod="$1" required="$2" hints="$3"
+  if python3 -c "import $mod" >/dev/null 2>&1; then
+    local version
+    version="$(python3 -c "import $mod; print(getattr($mod, '__version__', 'unknown'))" 2>/dev/null || echo "unknown")"
+    record "$mod" pymod "$required" true "$version" "$hints"
+  else
+    record "$mod" pymod "$required" false "" "$hints"
+  fi
+}
+
+check_skill_local_or_plugin() {
+  # Checks whether either the superpowers plugin is installed, OR a local skill at .claude/skills/<name>/SKILL.md exists.
+  local name="$1" required="$2"
+  local present="false" location=""
+
+  # Local project skill?
+  if [[ -f ".claude/skills/${name}/SKILL.md" ]]; then
+    present="true"; location="local: .claude/skills/${name}"
+  fi
+  # Agent/user-scope plugins often land in ~/.claude/plugins/cache/<marketplace>/superpowers/**
+  # Path depth: cache/<marketplace>/<plugin>/skills/<skill>/SKILL.md is typically 6 levels under
+  # the cache root; allow a bit of headroom (-maxdepth 8) in case marketplaces add an extra layer.
+  if find "${HOME}/.claude/plugins/cache" -maxdepth 8 -name "SKILL.md" -path "*/superpowers/*${name}/*" 2>/dev/null | grep -q .; then
+    present="true"; [[ -z "$location" ]] && location="plugin: superpowers"
+  fi
+
+  # kind=plugin hints are instructions, not Bash-runnable commands. mo-doctor.md renders
+  # these verbatim and asks the overseer to run them inside the Claude Code session.
+  local hints='{"any":"Run inside Claude Code: `/plugin marketplace add <superpowers-source>` then `/plugin install superpowers@<marketplace>`. Alternatively, copy a SKILL.md into `.claude/skills/'"$name"'/`. Re-run /mo-doctor after installing."}'
+  record "$name" plugin "$required" "$present" "$location" "$hints"
+}
+
+check_env_git_repo() {
+  # `--is-inside-work-tree` returns true even on a freshly-initialized repo
+  # with zero commits, where HEAD is unborn. Stage 3+ uses
+  # `git rev-parse HEAD` and `git log <base>..HEAD`, both of which fail in
+  # that state, so the preflight must require a verifiable HEAD too.
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    record "git-repo" env true false "" '{"any":"run `git init` and make an initial commit"}'
+    return
+  fi
+  if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    # Inside a work tree but HEAD is unborn — repo has no commits.
+    record "git-repo" env true false "(no commits yet — HEAD is unborn)" '{"any":"create an initial commit (e.g. `git commit --allow-empty -m \"chore: initial commit\"`); the workflow needs a HEAD that downstream stages can diff against"}'
+    return
+  fi
+  record "git-repo" env true true "$(git rev-parse --abbrev-ref HEAD)" '{"any":"run `git init` and make an initial commit"}'
+}
+
+# ---------- Hint builders -------------------------------------------------
+hints_yq() {
+  cat <<'JSON'
+{
+  "darwin": "brew install yq",
+  "linux-apt": "sudo snap install yq  # or: sudo add-apt-repository ppa:rmescandon/yq && sudo apt update && sudo apt install yq",
+  "linux-pacman": "sudo pacman -S go-yq",
+  "linux-dnf": "sudo dnf install yq  # or: go install github.com/mikefarah/yq/v4@latest",
+  "linux-apk": "sudo apk add yq",
+  "linux-generic": "go install github.com/mikefarah/yq/v4@latest",
+  "windows": "winget install MikeFarah.yq",
+  "any": "curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_$(uname -s | tr A-Z a-z)_amd64 -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq"
+}
+JSON
+}
+
+hints_plantuml_mcp() {
+  cat <<'JSON'
+{
+  "any": "npm install -g plantuml-mcp-server",
+  "note": "requires Node.js and a Java runtime (PlantUML dep). On macOS: `brew install node openjdk`. On Debian/Ubuntu: `sudo apt install nodejs npm default-jre`."
+}
+JSON
+}
+
+hints_python3() {
+  cat <<'JSON'
+{
+  "darwin": "brew install python3",
+  "linux-apt": "sudo apt install python3",
+  "linux-pacman": "sudo pacman -S python",
+  "linux-dnf": "sudo dnf install python3",
+  "any": "install Python 3.8+ from https://www.python.org/downloads/"
+}
+JSON
+}
+
+hints_pyyaml() {
+  cat <<'JSON'
+{
+  "any": "python3 -m pip install --user pyyaml",
+  "note": "if pip is missing: `python3 -m ensurepip --user`"
+}
+JSON
+}
+
+hints_ajv() {
+  cat <<'JSON'
+{
+  "any": "npm install -g ajv-cli",
+  "note": "optional — enables deep JSON Schema validation. Falls back to python3-jsonschema or yq if absent."
+}
+JSON
+}
+
+hints_jsonschema() {
+  cat <<'JSON'
+{
+  "any": "python3 -m pip install --user jsonschema",
+  "note": "optional — secondary fallback for schema validation when ajv-cli is absent."
+}
+JSON
+}
+
+hints_rtk() {
+  cat <<'JSON'
+{
+  "darwin": "brew install rtk && rtk init -g",
+  "any": "https://github.com/rtk-ai/rtk  (install binary, then run `rtk init -g` to register the Claude Code pre-tool-use hook)",
+  "note": "optional — filters verbose shell output (git diff, test runs, etc.) before Claude sees it. Large token savings in /mo-review, /mo-generate-implementation-diagrams, and the brainstorming chain."
+}
+JSON
+}
+
+hints_docling() {
+  cat <<'JSON'
+{
+  "darwin": "pipx install docling  # or: python3 -m pip install --user docling",
+  "linux-apt": "pipx install docling  # or: python3 -m pip install --user docling  (may need `sudo apt install pipx` first)",
+  "linux-pacman": "pipx install docling  # or: python3 -m pip install --user docling",
+  "linux-dnf": "pipx install docling  # or: python3 -m pip install --user docling",
+  "any": "pipx install docling  # or: python3 -m pip install --user docling",
+  "note": "optional — enables /mo-ingest, which converts non-text journal files (.pdf, .docx, .pptx, .xlsx, images) into sibling .md so /mo-run can consume them. Skip if your journal folder will only ever contain .md and .txt. Pulls ML dependencies (torch, transformers); the first `docling <file>` may download a few hundred MB of models."
+}
+JSON
+}
+
+hints_git() {
+  cat <<'JSON'
+{
+  "darwin": "brew install git",
+  "linux-apt": "sudo apt install git",
+  "linux-pacman": "sudo pacman -S git",
+  "linux-dnf": "sudo dnf install git",
+  "any": "https://git-scm.com/downloads"
+}
+JSON
+}
+
+# ---------- Run checks ----------------------------------------------------
+
+# REQUIRED
+check_cli git true       "$(hints_git)"
+check_cli python3 true   "$(hints_python3)"
+check_cli yq true        "$(hints_yq)"
+check_pymod yaml true    "$(hints_pyyaml)"
+check_cli plantuml-mcp-server true "$(hints_plantuml_mcp)"
+check_env_git_repo
+
+# Either uuidgen or python3 satisfies UUID generation; python3 is already checked.
+if command -v uuidgen >/dev/null 2>&1; then
+  record uuidgen cli false true "$(uuidgen 2>/dev/null | head -c 8 || echo ok)" '{}'
+fi
+
+# OPTIONAL
+check_cli ajv false      "$(hints_ajv)"
+check_pymod jsonschema false "$(hints_jsonschema)"
+
+# OPTIONAL companions — token-reduction tools that our commands auto-detect and use
+# when present. Never required; missing = normal operation.
+check_cli rtk false              "$(hints_rtk)"
+
+# OPTIONAL ingest — docling powers /mo-ingest (non-text journal files → sibling .md).
+# Safe to omit for text-only journals.
+check_cli docling false "$(hints_docling)"
+
+# REQUIRED skills — stage 3 of the workflow hands off to brainstorming → writing-plans →
+# executing-plans / subagent-driven-development → finishing-a-development-branch. Each must
+# be available either via the superpowers plugin OR a local `.claude/skills/<name>/SKILL.md`.
+for s in brainstorming writing-plans executing-plans subagent-driven-development finishing-a-development-branch; do
+  check_skill_local_or_plugin "$s" true
+done
+
+# ---------- Preflight short-circuit --------------------------------------
+if (( preflight )); then
+  # Preflight: exit 0 iff all required deps are present (worst_severity < 2).
+  if (( worst_severity >= 2 )); then
+    echo "millwright-overseer-development-machine preflight: required dependencies missing. Run /mo-doctor for details." >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+# ---------- Emit report ---------------------------------------------------
+if [[ "$format" == "human" ]]; then
+  echo "millwright-overseer-development-machine dependency report (os=$os)"
+  echo "-----------------------------------"
+  for r in "${results[@]}"; do
+    python3 - "$r" <<'PYEOF'
+import sys, json
+r = json.loads(sys.argv[1])
+sym = {"ok":"✓", "warn":"⚠", "error":"✗"}[r["severity"]]
+req = "required" if r["required"] else "optional"
+ver = f" ({r['version']})" if r['present'] and r['version'] else ""
+print(f"  {sym} {r['name']}{ver}  [{req}]")
+PYEOF
+  done
+  case "$worst_severity" in
+    0) echo; echo "All required dependencies present." ;;
+    1) echo; echo "Required OK. Some optional deps missing — run in JSON mode for install hints." ;;
+    2) echo; echo "Required dependencies missing. See JSON output (--format=json) for install hints." ;;
+  esac
+else
+  python3 - "$os" "$worst_severity" "${results[@]}" <<'PYEOF'
+import sys, json
+os_name = sys.argv[1]
+severity = int(sys.argv[2])
+checks = [json.loads(x) for x in sys.argv[3:]]
+summary = {"ok":"all required dependencies present","warn":"required ok; some optional missing","error":"required dependencies missing"}[
+    ["ok","warn","error"][severity]
+]
+print(json.dumps({"os": os_name, "status": ["ok","warn","error"][severity], "summary": summary, "checks": checks}, indent=2))
+PYEOF
+fi
+
+exit $worst_severity

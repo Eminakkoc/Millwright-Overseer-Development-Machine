@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# common.sh — shared helpers sourced by every millwright-overseer-development-machine script.
+# Not meant to be executed directly.
+
+set -euo pipefail
+
+# Plugin root. Prefer $CLAUDE_PLUGIN_ROOT (set by Claude Code when commands run),
+# fall back to discovering from this script's location for standalone invocation.
+if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+  MO_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+else
+  MO_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+fi
+export MO_PLUGIN_ROOT
+
+# Data root. Precedence:
+# 1. $MO_DATA_ROOT (set by command wrapper or user)
+# 2. userConfig.data_root (read from the plugin's user config, if available)
+# 3. default: ./millwright-overseer relative to the current working directory
+mo_data_root() {
+  if [[ -n "${MO_DATA_ROOT:-}" ]]; then
+    echo "$MO_DATA_ROOT"
+    return
+  fi
+  echo "${PWD}/millwright-overseer"
+}
+
+# Paths the millwright-overseer-development-machine operates on — always resolve via these helpers.
+#
+# The quest folder is now per-cycle: each /mo-run creates a fresh subfolder
+# under quest/ named after the journal folders + date (the "slug"), and a
+# top-level quest/active.md pointer file records which slug is currently
+# active. Historical quest folders are preserved across cycles so PMs can
+# query past task lists, summaries, and queue rationales.
+mo_quest_dir()             { echo "$(mo_data_root)/quest"; }
+mo_quest_active_pointer()  { echo "$(mo_quest_dir)/active.md"; }
+mo_journal_dir()           { echo "$(mo_data_root)/journal"; }
+mo_stream_dir()            { echo "$(mo_data_root)/workflow-stream"; }
+mo_feature_dir()           { echo "$(mo_stream_dir)/$1"; }
+mo_blueprints_current(){ echo "$(mo_feature_dir "$1")/blueprints/current"; }
+mo_blueprints_history(){ echo "$(mo_feature_dir "$1")/blueprints/history"; }
+mo_impl_dir()          { echo "$(mo_feature_dir "$1")/implementation"; }
+
+# Active-quest helpers — resolve through quest/active.md.
+#
+# mo_active_quest_slug — print the active slug to stdout. Exit 0 if active,
+# non-zero if no active cycle (slug missing, null, or pointer absent).
+mo_active_quest_slug() {
+  local pointer
+  pointer="$(mo_quest_active_pointer)"
+  [[ -f "$pointer" ]] || return 1
+  local slug
+  slug="$(mo_fm_get "$pointer" slug 2>/dev/null || true)"
+  [[ -n "$slug" && "$slug" != "null" && "$slug" != "~" ]] || return 1
+  printf '%s' "$slug"
+}
+
+# Path of the active quest's subfolder. Errors if no cycle is active.
+mo_quest_active_dir() {
+  local slug
+  slug="$(mo_active_quest_slug)" || mo_die "no active quest cycle (run /mo-run to start one)"
+  echo "$(mo_quest_dir)/${slug}"
+}
+
+# Path of <name>.md inside the active quest folder. Errors if no cycle is active.
+# Usage: mo_quest_active_file todo-list  ->  <data>/quest/<slug>/todo-list.md
+mo_quest_active_file() {
+  local name="${1:?name required}"
+  echo "$(mo_quest_active_dir)/${name}.md"
+}
+
+# Path of progress.md for the active quest. Errors if no cycle is active.
+mo_progress_file() { mo_quest_active_file progress; }
+
+# Compute the canonical quest slug from a journal-folder list.
+# Format: YYYY-MM-DD-<kebab1>+<kebab2>+...  with a 3-char hash suffix on
+# collision (when quest/<slug>/ already exists). Each input folder is
+# kebab-normalized via the same rules as scripts/todo.sh.
+mo_quest_compute_slug() {
+  [[ $# -gt 0 ]] || mo_die "mo_quest_compute_slug: at least one journal folder required"
+  python3 - "$(mo_quest_dir)" "$@" <<'PYEOF'
+import os, re, sys, hashlib, time
+quest_root, *folders = sys.argv[1:]
+def kebab(s):
+    s = s.strip().lower()
+    s = re.sub(r'[\s_]+', '-', s)
+    s = re.sub(r'[^a-z0-9-]', '', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    return s
+date_part = time.strftime('%Y-%m-%d')
+slugs = [kebab(f) for f in folders if kebab(f)]
+if not slugs:
+    sys.stderr.write('error: journal folder names produced empty slug after kebab normalization\n')
+    sys.exit(1)
+base = f"{date_part}-{'+'.join(slugs)}"
+candidate = base
+if not os.path.isdir(os.path.join(quest_root, candidate)):
+    print(candidate)
+    sys.exit(0)
+# Collision — derive a deterministic short suffix from the existing folder
+# count + a microsecond salt so two parallel runs in the same instant don't
+# pick the same suffix.
+salt = f"{time.time_ns()}-{os.getpid()}".encode()
+suffix = hashlib.sha256(salt).hexdigest()[:3]
+while True:
+    candidate = f"{base}-{suffix}"
+    if not os.path.isdir(os.path.join(quest_root, candidate)):
+        print(candidate)
+        sys.exit(0)
+    salt = (salt + b'.').strip()
+    suffix = hashlib.sha256(salt + str(time.time_ns()).encode()).hexdigest()[:3]
+PYEOF
+}
+
+# yq wrapper — all reads/writes must go through these helpers so a future
+# replacement of yq with another YAML tool is a single-file change.
+mo_require_yq() {
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "error: yq is required (install via 'brew install yq' or equivalent)" >&2
+    exit 2
+  fi
+}
+
+# Read a frontmatter field from a markdown file.
+# Usage: mo_fm_get <file> <field>
+mo_fm_get() {
+  mo_require_yq
+  local file="$1" field="$2"
+  # Accept either bare field names ("queue") or fully-qualified yq
+  # paths (".queue[0]", ".active.feature", ".queue[]"). Strip a leading
+  # dot if present so we never produce a "..<path>" that yq would reject
+  # as "invalid input text".
+  [[ "$field" == .* ]] && field="${field#.}"
+  # Extract the frontmatter block, then yq the field.
+  awk '/^---$/{c++; next} c==1' "$file" | yq eval ".${field}" -
+}
+
+# Set a frontmatter field in-place.
+# Usage: mo_fm_set <file> <field> <value>
+# Value is treated as a YAML literal (strings need to be quoted by the caller).
+mo_fm_set() {
+  mo_require_yq
+  local file="$1" field="$2" value="$3"
+  local tmp
+  tmp="$(mktemp)"
+  # Split frontmatter from body, edit frontmatter, restitch.
+  awk 'BEGIN{c=0} /^---$/{c++; print; next} c==1{print > "/tmp/mo_fm_head"} c>1{print > "/tmp/mo_fm_body"}' "$file" >/dev/null 2>&1 || true
+  # Simpler approach: use yq's frontmatter-aware mode via a pre/post split.
+  python3 - "$file" "$field" "$value" <<'PYEOF' > "$tmp"
+import sys, re, yaml
+path, field, value = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    content = f.read()
+m = re.match(r'^---\n(.*?)\n---\n(.*)$', content, re.DOTALL)
+if not m:
+    print(content, end='')
+    sys.exit(0)
+fm = yaml.safe_load(m.group(1)) or {}
+# Coerce obvious scalar types from the CLI string.
+try:
+    parsed = yaml.safe_load(value)
+except yaml.YAMLError:
+    parsed = value
+fm[field] = parsed
+print('---')
+print(yaml.safe_dump(fm, default_flow_style=False, sort_keys=False).rstrip())
+print('---')
+print(m.group(2), end='')
+PYEOF
+  mv "$tmp" "$file"
+}
+
+# Render a template by substituting {{TOKEN}} placeholders.
+# Usage: mo_render_template <template-path> <dest-path> KEY1=VAL1 KEY2=VAL2 ...
+#
+# Substitutions that land inside the YAML frontmatter block are encoded as
+# YAML scalars — i.e. quoted whenever the raw value contains characters that
+# YAML would otherwise reinterpret (`:`, `#`, `[`, `]`, `{`, `}`, leading
+# `-`/`?`/`!`, etc.). Without this, a free-form value like
+# `summary=foo: bar # broken` would write a frontmatter line that fails YAML
+# parsing the next time the file is read.
+#
+# Two ways callers can opt out of the auto-quoting:
+#   1. Wrap the placeholder in YAML flow brackets in the template
+#      (e.g. `features: [{{FEATURES}}]`) — values inside `[...]`/`{...}`
+#      are not rewritten because the template author has already chosen
+#      a flow context, and the caller is expected to pass a comma-separated
+#      list of pre-validated tokens (the existing kebab-case feature pattern).
+#   2. Pass the value with a leading `!RAW!` sentinel — `KEY=!RAW!literal yaml`.
+#      The sentinel is stripped and the rest is interpolated verbatim. Use
+#      this for values that already encode valid YAML (e.g. `null`, an
+#      explicit array literal). Reserved for internal callers.
+#
+# Substitutions outside the frontmatter (in the body) are always literal.
+mo_render_template() {
+  local tmpl="$1" dest="$2"; shift 2
+  mkdir -p "$(dirname "$dest")"
+  python3 - "$tmpl" "$dest" "$@" <<'PYEOF'
+import re, sys, yaml
+tmpl_path, dest_path, *kvs = sys.argv[1:]
+with open(tmpl_path) as f:
+    content = f.read()
+
+# Split frontmatter from body so we only YAML-escape inside frontmatter.
+m = re.match(r'^(---\n.*?\n---)(.*)$', content, re.DOTALL)
+if m:
+    fm, body = m.group(1), m.group(2)
+else:
+    fm, body = '', content
+
+def yaml_scalar(value):
+    """Render a Python value as a YAML scalar suitable for inline placement.
+    Quotes only when needed."""
+    # Use yaml.safe_dump's representation of the value, then strip the
+    # trailing newline. default_flow_style=True keeps it on one line.
+    out = yaml.safe_dump(value, default_flow_style=True, allow_unicode=True).rstrip()
+    # safe_dump wraps a single string in `... '\n` form; trim the
+    # document-end marker if it appears.
+    if out.endswith('\n...'):
+        out = out[:-4].rstrip()
+    return out
+
+for kv in kvs:
+    if '=' not in kv:
+        continue
+    key, val = kv.split('=', 1)
+    placeholder = '{{' + key + '}}'
+
+    # !RAW! sentinel: caller has provided literal YAML; emit verbatim.
+    if val.startswith('!RAW!'):
+        literal = val[5:]
+        fm = fm.replace(placeholder, literal)
+        body = body.replace(placeholder, literal)
+        continue
+
+    # In the body, always literal.
+    body = body.replace(placeholder, val)
+
+    # In the frontmatter, replace each occurrence one at a time so we can
+    # detect whether the placeholder sits inside a YAML flow container
+    # ([...] or {...}) and skip auto-quoting in that case.
+    while placeholder in fm:
+        idx = fm.index(placeholder)
+        # Walk backwards to find the opening of any nearest flow container.
+        depth_sq = depth_cu = 0
+        in_flow = False
+        for i in range(idx - 1, -1, -1):
+            ch = fm[i]
+            if ch == '\n':
+                break
+            if ch == ']': depth_sq += 1
+            elif ch == '[':
+                if depth_sq == 0: in_flow = True; break
+                depth_sq -= 1
+            elif ch == '}': depth_cu += 1
+            elif ch == '{':
+                if depth_cu == 0: in_flow = True; break
+                depth_cu -= 1
+        if in_flow:
+            replacement = val
+        else:
+            replacement = yaml_scalar(val)
+        fm = fm[:idx] + replacement + fm[idx + len(placeholder):]
+
+with open(dest_path, 'w') as f:
+    f.write(fm + body)
+PYEOF
+}
+
+# Abort with a message on stderr and non-zero exit.
+mo_die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+# Pretty-print info to stderr (keeps stdout clean for command output).
+mo_info() {
+  echo "mo: $*" >&2
+}

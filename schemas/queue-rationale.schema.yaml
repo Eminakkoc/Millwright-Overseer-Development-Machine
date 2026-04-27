@@ -1,0 +1,38 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: millwright-overseer-development-machine/queue-rationale.schema.yaml
+title: quest/<active-slug>/queue-rationale.md frontmatter
+description: >
+  Audit artifact for the stage-1.5 dependency-ordering decision. Lives at
+  millwright-overseer/quest/<active-slug>/queue-rationale.md, co-located
+  with the cycle's todo-list.md, summary.md, and progress.md inside the
+  per-cycle subfolder. Written by the Pre-flight Handler in /mo-continue
+  (Step 2B) just before progress.sh reorder so the prioritized order and
+  the reasoning behind it survive a session break. Persists permanently
+  under the cycle's slug subfolder once the cycle ends — the historical
+  rationale is preserved as part of the task archive rather than scrubbed
+  by the next /mo-run.
+
+type: object
+additionalProperties: false
+required:
+  - id
+  - todo-list-id
+  - features
+
+properties:
+  id:
+    type: string
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+  todo-list-id:
+    type: string
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+  features:
+    type: array
+    minItems: 1
+    items:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9-]*$"
+    description: >
+      Kebab-case feature names in the priority order persisted into progress.md's
+      queue. The list MUST exactly match `progress.md.queue` after the matching
+      `progress.sh reorder` call. The body's `## Order` section mirrors this list.

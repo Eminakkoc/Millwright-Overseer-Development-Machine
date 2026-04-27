@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# todo.sh — update todo item states in the active quest cycle's todo-list.md
+# (resolved via the active-quest pointer at quest/active.md → quest/<slug>/todo-list.md).
+#
+# Todo items are written as markdown checkboxes with an optional assignee tag
+# and the state as a prefix word:
+#   - [ ] TODO — ITEM-001: description                      (default, unselected, unassigned)
+#   - [ ] (emin) TODO — ITEM-001: description               (assigned but not yet selected)
+#   - [x] (emin) PENDING — ITEM-001: description            (selected for this cycle)
+#   - [x] (emin) IMPLEMENTING — ITEM-001: description       (currently being worked on)
+#   - [x] (emin) IMPLEMENTED — ITEM-001: description        (complete)
+#   - [x] (emin) CANCELED — ITEM-001: description           (removed mid-cycle; preserved for audit)
+#
+# Convention: [ ] = TODO only; [x] = any selected state (PENDING/IMPLEMENTING/IMPLEMENTED/CANCELED).
+# Assignee rules:
+#   - Optional on `[ ] TODO` lines (overseer may pre-assign or leave unassigned).
+#   - REQUIRED on any `[x]` line. pend-selected rejects `[x] TODO` lines that
+#     have no `(assignee)` tag and lists the offending item ids.
+#   - Preserved automatically by set-state / bulk-transition across all state changes.
+#
+# Usage:
+#   todo.sh set-state <item-id> <TODO|PENDING|IMPLEMENTING|IMPLEMENTED|CANCELED>
+#   todo.sh bulk-transition <from-state> <to-state> [--feature <kebab-name>]
+#                                 # with --feature: only items under `## <matching-header>` transition.
+#                                 # without it: operates on every item in the file (backward-compatible).
+#                                 # header matching is case-insensitive and kebab-normalized,
+#                                 # so `## Marketing site` matches `--feature marketing-site`.
+#   todo.sh pend-selected         # transform overseer-marked [xX] TODO items to [x] PENDING
+#                                 # (fails if any selected item lacks an assignee)
+#   todo.sh list <state> [--feature <kebab-name>]
+#                                 # list item ids currently in <state>; with --feature,
+#                                 # only items under the matching ## <header> section.
+#   todo.sh add <feature> <state> <assignee> <item-id> <description>
+#                                 # append a new item under the feature's section (creating
+#                                 # the section if absent). state ∈ {TODO, IMPLEMENTING, CANCELED}.
+#                                 # PENDING is refused (only stage-1.5 pend-selected writes PENDING);
+#                                 # IMPLEMENTED is refused (only mo-complete-workflow writes IMPLEMENTED).
+#                                 # Fails if item-id already exists in the file.
+
+set -euo pipefail
+source "$(dirname "$0")/internal/common.sh"
+
+# todo-list.md lives inside the active quest cycle's subfolder; resolve it
+# every call so the path tracks the active-quest pointer.
+todo_file() { mo_quest_active_file todo-list; }
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+  set-state)
+    item_id="${1:?item-id required}"
+    new_state="${2:?new-state required}"
+    file="$(todo_file)"
+    [[ -f "$file" ]] || mo_die "todo-list.md not found"
+    python3 - "$file" "$item_id" "$new_state" <<'PYEOF'
+import sys, re
+path, item_id, new_state = sys.argv[1], sys.argv[2], sys.argv[3]
+checkbox = '[ ]' if new_state == 'TODO' else '[x]'
+with open(path) as f:
+    lines = f.readlines()
+# Capture optional (assignee) between checkbox and state word.
+pattern = re.compile(
+    rf'^(\s*-\s+)\[[ xX]\]\s+(?:\(([^)]+)\)\s+)?(TODO|PENDING|IMPLEMENTING|IMPLEMENTED|CANCELED)\s+—\s+{re.escape(item_id)}(:.*)$'
+)
+updated = 0
+for i, line in enumerate(lines):
+    m = pattern.match(line.rstrip('\n'))
+    if m:
+        assignee = m.group(2)
+        assignee_tag = f'({assignee}) ' if assignee else ''
+        lines[i] = f'{m.group(1)}{checkbox} {assignee_tag}{new_state} — {item_id}{m.group(4)}\n'
+        updated += 1
+if updated == 0:
+    print(f'error: item {item_id} not found in {path}', file=sys.stderr)
+    sys.exit(1)
+with open(path, 'w') as f:
+    f.writelines(lines)
+print(f'mo: set {item_id} to {new_state}', file=sys.stderr)
+PYEOF
+    ;;
+
+  bulk-transition)
+    from_state="${1:?from-state required}"
+    to_state="${2:?to-state required}"
+    shift 2
+    feature_filter=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --feature)   feature_filter="${2:?--feature requires a value}"; shift 2 ;;
+        --feature=*) feature_filter="${1#*=}"; shift ;;
+        *)           mo_die "bulk-transition: unknown argument: $1" ;;
+      esac
+    done
+    file="$(todo_file)"
+    [[ -f "$file" ]] || mo_die "todo-list.md not found"
+    python3 - "$file" "$from_state" "$to_state" "$feature_filter" <<'PYEOF'
+import sys, re
+path, from_state, to_state, feature_filter = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+to_checkbox = '[ ]' if to_state == 'TODO' else '[x]'
+
+def kebab(s):
+    # "Marketing site" → "marketing-site"; "Payments" → "payments"; tolerant of
+    # underscores, multi-spaces, stray punctuation.
+    s = s.strip().lower()
+    s = re.sub(r'[\s_]+', '-', s)
+    s = re.sub(r'[^a-z0-9-]', '', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    return s
+
+target = kebab(feature_filter) if feature_filter else None
+
+item_pat = re.compile(
+    rf'^(\s*-\s+)\[[ xX]\]\s+(?:\(([^)]+)\)\s+)?{re.escape(from_state)}\s+—'
+)
+
+with open(path) as f:
+    lines = f.readlines()
+
+current_section = None
+count = 0
+for i, line in enumerate(lines):
+    stripped = line.rstrip('\n')
+    if stripped.startswith('## '):
+        current_section = kebab(stripped[3:])
+        continue
+    # If a filter was given, skip lines outside the matching section.
+    if target is not None and current_section != target:
+        continue
+    m = item_pat.match(stripped)
+    if m:
+        prefix, assignee = m.group(1), m.group(2)
+        tag = f'({assignee}) ' if assignee else ''
+        lines[i] = item_pat.sub(f'{prefix}{to_checkbox} {tag}{to_state} —', stripped, count=1) + '\n'
+        count += 1
+
+with open(path, 'w') as f:
+    f.writelines(lines)
+
+scope = f' under ## {feature_filter}' if feature_filter else ''
+print(f'mo: transitioned {count} items from {from_state} to {to_state}{scope}', file=sys.stderr)
+PYEOF
+    ;;
+
+  pend-selected)
+    # Overseer marks items with [x]/[X] on TODO lines to select them for this cycle.
+    # Convert those marks to canonical [x] (<assignee>) PENDING. Idempotent: an item
+    # already in [x] PENDING is left untouched because this only matches state word == TODO.
+    #
+    # Validation: every [x] TODO line MUST carry an (assignee) tag. If any are missing,
+    # the script exits 2 and lists the offending items without touching the file.
+    file="$(todo_file)"
+    [[ -f "$file" ]] || mo_die "todo-list.md not found"
+    python3 - "$file" <<'PYEOF'
+import sys, re
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+# Match any [xX] TODO line; capture optional assignee for validation.
+pattern = re.compile(
+    r'^(\s*-\s+)\[[xX]\]\s+(?:\(([^)]+)\)\s+)?TODO\s+—\s+(.+)$',
+    re.MULTILINE,
+)
+# First pass: collect items missing an assignee.
+missing = [m.group(3) for m in pattern.finditer(content) if not m.group(2)]
+if missing:
+    print(
+        'error: the following items are marked [x] but have no (assignee) tag.',
+        file=sys.stderr,
+    )
+    print(
+        '       add a name tag between the checkbox and the state word, e.g. `[x] (emin) TODO — ...`.',
+        file=sys.stderr,
+    )
+    for item in missing:
+        print(f'  - {item}', file=sys.stderr)
+    sys.exit(2)
+# Second pass: rewrite with (assignee) preserved.
+def _sub(m):
+    prefix, assignee = m.group(1), m.group(2)
+    return f'{prefix}[x] ({assignee}) PENDING — {m.group(3)}'
+new_content, count = pattern.subn(_sub, content)
+with open(path, 'w') as f:
+    f.write(new_content)
+print(f'mo: transitioned {count} overseer-selected items from TODO to PENDING', file=sys.stderr)
+PYEOF
+    ;;
+
+  list)
+    state="${1:?state required}"
+    shift 1
+    feature_filter=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --feature)   feature_filter="${2:?--feature requires a value}"; shift 2 ;;
+        --feature=*) feature_filter="${1#*=}"; shift ;;
+        *)           mo_die "list: unknown argument: $1" ;;
+      esac
+    done
+    file="$(todo_file)"
+    [[ -f "$file" ]] || mo_die "todo-list.md not found"
+    # Python implementation — portable across BSD/GNU sed, accepts the optional
+    # (assignee) tag, and honors --feature with the same kebab-normalization as
+    # bulk-transition so `--feature marketing-site` matches `## Marketing site`.
+    python3 - "$file" "$state" "$feature_filter" <<'PYEOF'
+import sys, re
+path, state, feature_filter = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def kebab(s):
+    s = s.strip().lower()
+    s = re.sub(r'[\s_]+', '-', s)
+    s = re.sub(r'[^a-z0-9-]', '', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    return s
+
+target = kebab(feature_filter) if feature_filter else None
+
+item_pat = re.compile(
+    rf'^\s*-\s+\[[ xX]\]\s+(?:\([^)]+\)\s+)?{re.escape(state)}\s+—\s+([A-Z0-9-]+)'
+)
+
+current_section = None
+with open(path) as f:
+    for line in f:
+        stripped = line.rstrip('\n')
+        if stripped.startswith('## '):
+            current_section = kebab(stripped[3:])
+            continue
+        if target is not None and current_section != target:
+            continue
+        m = item_pat.match(stripped)
+        if m:
+            print(m.group(1))
+PYEOF
+    ;;
+
+  add)
+    feature="${1:?feature required}"
+    state="${2:?state required}"
+    assignee="${3:?assignee required}"
+    item_id="${4:?item-id required}"
+    description="${5:?description required}"
+    case "$state" in
+      TODO|IMPLEMENTING|CANCELED) ;;
+      PENDING)     mo_die "state=PENDING is not allowed for manual add (only stage-1.5 pend-selected writes PENDING)" ;;
+      IMPLEMENTED) mo_die "state=IMPLEMENTED is not allowed for manual add (only mo-complete-workflow writes IMPLEMENTED)" ;;
+      *)           mo_die "invalid state: $state (valid: TODO|IMPLEMENTING|CANCELED)" ;;
+    esac
+    file="$(todo_file)"
+    [[ -f "$file" ]] || mo_die "todo-list.md not found"
+    python3 - "$file" "$feature" "$state" "$assignee" "$item_id" "$description" <<'PYEOF'
+import sys, re
+path, feature, state, assignee, item_id, description = sys.argv[1:]
+
+def kebab(s):
+    s = s.strip().lower()
+    s = re.sub(r'[\s_]+', '-', s)
+    s = re.sub(r'[^a-z0-9-]', '', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    return s
+
+target_section = kebab(feature)
+checkbox = '[ ]' if state == 'TODO' else '[x]'
+new_line = f'- {checkbox} ({assignee}) {state} — {item_id}: {description}\n'
+
+with open(path) as f:
+    lines = f.readlines()
+
+# Uniqueness check: item-id must not already exist in any item line.
+id_check_pat = re.compile(
+    rf'^\s*-\s+\[[ xX]\]\s+(?:\([^)]+\)\s+)?'
+    rf'(?:TODO|PENDING|IMPLEMENTING|IMPLEMENTED|CANCELED)\s+—\s+{re.escape(item_id)}\b'
+)
+for i, line in enumerate(lines):
+    if id_check_pat.match(line.rstrip('\n')):
+        print(f'error: item-id {item_id} already exists at line {i+1}', file=sys.stderr)
+        sys.exit(1)
+
+# Find target section; collect its start index if present.
+section_start = None
+for i, line in enumerate(lines):
+    stripped = line.rstrip('\n')
+    if stripped.startswith('## ') and kebab(stripped[3:]) == target_section:
+        section_start = i
+        break
+
+if section_start is None:
+    # Create new section at end of file.
+    if lines and not lines[-1].endswith('\n'):
+        lines[-1] += '\n'
+    if lines and lines[-1].strip() != '':
+        lines.append('\n')
+    lines.append(f'## {target_section}\n')
+    lines.append('\n')
+    lines.append(new_line)
+else:
+    # Insert at end of the target section (just before the next ## or EOF).
+    insert_at = len(lines)
+    for j in range(section_start + 1, len(lines)):
+        if lines[j].startswith('## '):
+            insert_at = j
+            break
+    # Trim trailing blank lines before the next section / EOF.
+    while insert_at > section_start + 1 and lines[insert_at - 1].strip() == '':
+        insert_at -= 1
+    lines.insert(insert_at, new_line)
+
+with open(path, 'w') as f:
+    f.writelines(lines)
+
+print(f'mo: added {item_id} as [{state}] under ## {target_section}', file=sys.stderr)
+PYEOF
+    ;;
+
+  *)
+    echo "usage: todo.sh {set-state|bulk-transition|pend-selected|list|add} ..." >&2
+    exit 2
+    ;;
+esac

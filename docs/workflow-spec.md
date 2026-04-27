@@ -1,0 +1,917 @@
+# Millwright-Overseer Agentic Workflow System
+
+## Naming and the analogy
+
+This approach mainly focuses on the software development with 2 actors which are:
+
+1. The Millwright
+2. The Overseer
+
+The Millwright is the one who writes the code and the Overseer is the one who provides documents, notes and other resources for the millwright to implement. The Overseer also has another important task which is to check/review the outputs of each step that the Millwright perform.
+
+Millwright-Overseer name came from the analogy where in a factory/plant a millwright is responsible from building, maintaining and fixing the heavy machines.
+
+During the old times they were restricted by the available materials for building the appropriate machine for performing a specific task. In todays software development environment, we can consider project as the factory/plant, the modules or features in that project can be considered as machines that perform a task, and the developer can be considered as the millwright who builds those features with the given specs and requirements. The tools are restricted by the dependencies or libraries used in that project.
+
+Before AI coding agents, the overseer was the developer themselves, they read the requirements, they create diagrams from those requirements and get ready for the implementation, then they first review the code they had written. But now with the AI coding agents being introduced, all those steps can now be done by the AI coding agent. Then what will todays developers do? This workflow system introduces a new role for the developers (as previously called) which is now called "The Overseer". The role of the overseer is to review and check each output of the millwright.
+
+In this approach, there are defined stages which each of those stages produces an output to be reivewed and corrected by the overseer.
+
+## Main Motivation
+
+The main motivation behind creating such an approach is the current confusion among many developers, that they see themselves as useless by experiencing of hearing the capabilities and outputs of the ai coding agents. Things have been changed since those agent begin to get in our codebases. The kind of work the developers were doing before ai is now completely different from todays world. That was the reason the new role "Overseer" is introduced in this approach. To leave the traditional role which used to be called "developer", since the work done by those developers are also completely changed. And also the role "Millwright" was introduced since the development done by the ai coding agent is also its own type and also prevent the perception that "ai has taken the jobs of developers".
+
+We believe that in todays software development environment, the coding part should be delegated to the ai coding agents completely. In this approach, the overseer should not interfere with the code that ai agents had been generating. Instead they should give the specs, rules, tools and review the output. The codebase is now just another item in the context alongside with the .md files inside the millwright-overseer folder.
+
+## The Reform in Software Development Tools/Artifacts
+
+There used to be 1 main component in a software project where the developer is responsible from, which was: the codebase. All other components, the requirement documents, task management tools, design handoff apps etc. were all other tools or artifacts which were connected to the codebase, since codebase is the main component which produces the output: the product. In todays world we no longer need that much external tools, resources or artifatcs which we used to use to help us developing code.
+
+- Handoff tools are no longer needed since we use MCP's or directly code generated from design tools.
+  With millwright-overseer agentic workflow system:
+- Requirement documents will not be prepared and given by another actor Project manager or business analyst. They used to be a bridge between the customer and the developer, but now can be directly received from customers via voice recording and transforming them into prompts, or other specs documents provided which can be saved to RAG systmes or directly saved as text documents to be given to coding agents as inputs. Even a vibe-coded project can now be used as a prompt.
+- Task management tools like JIRA or Linear are no longer needed with this approach since the input documents and specs are transformed and saved in "Journal" folders which are transformed into todo.md documents where you can add additional data such as: who is responsible from this task, related requirements.md documents, diagrams, commits etc. since all those info are in the same space with the codebase. Project managers can now get whatever data they desire from the documents which we will be talking about later. They will be able to get the relevant data by giving prompt to their own agents such as: "Can you please give me a detailed report on ongoing tasks?", "Please tell me if the development of the loyalty related topic we discussed in yesterdays meeting has been completed? And provide me summary how that feature interacts with the current authentication module?", "Summarize the work done by mobile team today" etc. They will get the information directly from .md files and codebase itself.
+
+## The Main Components
+
+The 2 main compoents in this system are:
+
+1. Codebase
+2. Millwright-Overseer folder (The control room)
+
+### Millwright-Overseer folder (The control room)
+
+This folder holds three components at the data root:
+
+1. **Journal**: essential resources which will be used for developing code — meeting transcripts, notes, specifications etc.
+2. **Quest**: each `/mo-run` creates a fresh **per-cycle subfolder** under `quest/` (named after a date-prefixed slug derived from the journal folders, e.g. `quest/2026-04-27-pricing-meeting/`) and writes the cycle's four files inside it: `todo-list.md`, `summary.md`, `progress.md` (single workflow state file — feature queue, completed features, currently active feature's runtime state), and `queue-rationale.md` (audit of the stage-1.5 dependency-ordering decision). All four are co-generated by `mo-run` and share a quest cycle's lifecycle. Subfolders from previous cycles are **never** modified or deleted — they form a permanent task archive that PMs and future overseers can query (past task lists, summaries, queue rationales, and the historical state of `progress.md`). The top-level `quest/active.md` pointer file records which subfolder is currently active; path-resolution helpers in `scripts/internal/common.sh` (and the `scripts/quest.sh` wrapper) read it to map references like "the active todo-list.md" to the right subfolder.
+3. **Workflow stream**: per-feature generated requirements, diagrams, and review artifacts.
+
+#### Quest
+
+When the overseer asks for a task to be completed (e.g. "Implement the payment module"), `/mo-run` creates a new per-cycle subfolder under `quest/` and the millwright generates these files inside it:
+
+- **todo-list.md**: The todos should be categorized for each existing module and newcoming module and each item should have an id to be referenced by other documents.
+  todo items may have 5 states: TODO(initial), PENDING(selected to be involved in workflow), IMPLEMENTING(currently in workflow), IMPLEMENTED(complete), CANCELED(removed from scope mid-cycle; preserved for audit). Each item also carries an optional **assignee** — the name of the overseer responsible for it — written in parentheses between the checkbox and the state word, e.g. `- [ ] (emin) TODO — PAY-001: capture webhook`. Assignees are optional on `[ ] TODO` lines (the overseer may pre-assign without selecting) but **mandatory** on every `[x]` line: `todo.sh pend-selected` rejects any `[x] TODO` that lacks an `(assignee)` tag and lists the offending items so the overseer can fix them before retrying.
+
+  **State machine paths.** The normal cycle is `[ ] TODO → [x] PENDING → [x] IMPLEMENTING → [x] IMPLEMENTED`, where the overseer drives selection (TODO→PENDING via `pend-selected`) and the automated stages drive the rest (stage 3 promotes PENDING→IMPLEMENTING; stage 8 promotes IMPLEMENTING→IMPLEMENTED). Two additional paths support mid-cycle edits: `/mo-update-todo-list add <feature> IMPLEMENTING ...` creates a new item directly in the IMPLEMENTING state for a scope expansion discovered during brainstorming or review, and `/mo-update-todo-list cancel <item-id>` flips an item to CANCELED. CANCELED items are left alone by stage 8's bulk IMPLEMENTING→IMPLEMENTED sweep. The assignee tag is preserved verbatim through every state transition.
+
+  Checkbox convention: `[ ]` = TODO (unselected); `[x]` = any selected state (PENDING/IMPLEMENTING/IMPLEMENTED/CANCELED) — the state word is the canonical source of truth for downstream progress.
+
+  **Manual writes to `PENDING` and `IMPLEMENTED` are refused.** `PENDING` is only written by stage-1.5's `pend-selected` (the transition is an audit event tied to the overseer's bulk selection, not a state anyone writes ad-hoc). `IMPLEMENTED` is only written by stage-8 `mo-complete-workflow` (the commits-linkage invariant depends on it being promoted in one atomic pass with the active feature's scope).
+- **summary.md**: generated summary of all resources. Used for understanding the context of the resources or work to be done.
+
+#### progress.md (central workflow state)
+
+A single file inside the active cycle's quest subfolder: `millwright-overseer/quest/<active-slug>/progress.md`. The `<active-slug>` segment is recorded in the top-level `quest/active.md` pointer; helpers (`scripts/quest.sh dir`, `mo_progress_file` in `common.sh`) resolve the path automatically. Co-generated with the cycle's `todo-list.md`, `summary.md`, and `queue-rationale.md` by `mo-run` — the four files share the quest cycle's lifecycle. Earlier cycles' `progress.md` files (and the rest of their subfolder) are preserved permanently under their own slug subfolder. Populated by `mo-run` at stage 1; mutated by `mo-apply-impact` (stage 2, via `progress.sh activate`), `/mo-continue` / `/mo-plan-implementation` / review commands (runtime field writes), and `mo-complete-workflow` (stage 8, via `progress.sh finish`).
+
+YAML frontmatter shape:
+
+```yaml
+---
+id: <uuid>
+todo-list-id: <uuid of the related todo-list.md>
+queue: [notifications, audit-log]  # features still to run, in priority order
+completed: [onboarding]             # features finalized via mo-complete-workflow
+active:                             # null between workflows; populated while a feature is running
+  feature: payments
+  branch: feat/payments/webhook     # null until stage 3
+  current-stage: 5
+  sub-flow: none
+  base-commit: a1b2c3d               # null until stage 3
+  execution-mode: subagent-driven
+  planning-mode: brainstorming      # 'brainstorming' | 'direct' | 'none' — set at stage 3 by mo-plan-implementation
+  review-mode: none                 # 'brainstorming' | 'direct' | 'none' — set at stage 6 by mo-review
+  implementation-completed: true
+  overseer-review-completed: false
+---
+```
+
+**Two-step activation lifecycle:**
+
+- **Stage 1** — `mo-run` scaffolds progress.md with the ordered queue; `active` starts as `null`.
+- **Stage 2** — `mo-apply-impact` calls `progress.sh activate`, which pops `queue[0]` into a fresh `active` block (current-stage=2, branch=null, all other runtime fields at defaults). Fails if `active` is already non-null.
+- **Stages 2–8** — the runtime fields inside `active` are mutated in place as the workflow progresses. Only the `active` block is touched; `queue` and `completed` are unchanged during a feature's lifecycle.
+- **Stage 8** — `mo-complete-workflow` calls `progress.sh finish`, which appends `active.feature` to `completed` and sets `active` back to `null`. The next `/mo-apply-impact` will activate `queue[0]` into a new `active` block.
+
+On resume, the millwright reads this file to determine the current position: `active` null + non-empty queue means "next feature is waiting to be activated"; `active` populated means "feature X is at stage N with sub-flow Y"; `active` null + empty queue means "cycle complete".
+
+#### Journal
+
+General knowledge base, source of information.
+
+Journal folder structure:
+
+**journal**
+
+- pricing-requirements-meeting (example)
+  - meeting-transcript.txt (example)
+  - notes.md (example)
+  - devops-team-concerns.md (example)
+- authentication-related-slack-conversation (example)
+  - conversation.txt (example)
+
+#### Workflow stream
+
+This folder has 2 sub folders which are:
+
+1. **blueprints**: folder with permanent content and a history mechanism. Has `current/` and `history/` subfolders. `current/` holds the live blueprint for the active feature:
+   - `requirements.md` — Goals (this cycle), Planned (future cycles), Non-goals.
+   - `config.md` — auto-block summarizing relevant skills under `.claude/skills/` and rules under `.claude/rules/` (≤ 10 entries / ≤ 2 lines each), plus `## Skills` / `## Rules` / `## Load on demand` tiers and a manual `## Overseer Additions` section the overseer fills with custom prompts. Stage 3 / stage 6 chains pull in skills/rules from here on demand.
+   - `diagrams/` — use-case + sequence + optional class `.puml` files.
+   - `primer.md` — compact stage-3 launch primer (active scope, Goals excerpt, journal context for the active feature, likely-relevant skills/rules). Written by `mo-plan-implementation` immediately before invoking the brainstorming chain and refreshed by `/mo-update-blueprint`. Rotates with the rest of `current/` so historical primers remain auditable.
+
+   Overseer reviews these files at the stage-2 gate to confirm the requirements before brainstorming launches.
+
+   `history/` keeps prior `current/` snapshots in subfolders named `v[number]`. Each rotation increments the number and writes a sibling `reason.md` recording why the rotation fired (`completion`, `manual`, `re-spec-cascade`, etc.). Rotations move every child of `current/` (`requirements.md`, `config.md`, `diagrams/`, `primer.md`) so the audit trail is complete; they fire on stage 8 (`mo-complete-workflow`) and on `/mo-update-blueprint`.
+
+2. **implementation**: a temporary folder used during implementation and review. Holds:
+   - `diagrams/` — diagrams of the implemented behaviour of `base-commit..HEAD`, with pre-existing participants/classes/flows framed as shaded context next to the new functionality so the overseer sees the change inside one diagram set.
+   - `overseer-review.md` — findings authored by the overseer at stage 5 and addressed by the chain in the stage-6 review session.
+   - `review-context.md` — compact stage-6 review primer (active scope, goals, implemented surface, open-findings cheat sheet). Written by `/mo-review` and consumed by the brainstorming review session as the required first read alongside `overseer-review.md`.
+   - `change-summary.md` — cached analysis of `base-commit..HEAD` (changed-files index, suspected flows, omitted paths). Shared by `/mo-update-blueprint` and `/mo-generate-implementation-diagrams` via `commits.sh change-summary-fresh` so the bounded codebase reads only happen once per commit range.
+
+   There is no separate pre-implementation diagram set — the chain's plan under `docs/superpowers/plans/` describes intent textually, and the implementation diagrams carry the comparison inside each diagram via the existing-vs-new framing convention. The whole `implementation/` folder is cleared at stage 8 (`mo-complete-workflow`) and on `/mo-abort-workflow`.
+
+Workflow stream folder structure:
+
+**workflow-stream**
+
+- [feature]
+  - blueprints
+    - history
+      - v1 (example)
+        - requirements.md
+        - config.md
+        - diagrams
+          - auth-sequence-diagram.puml (example)
+          - use-case-diagram.puml (example)
+      - v2 (example)
+        - requirements.md
+        - config.md
+        - diagrams
+          - auth-sequence-diagram.puml (example)
+          - use-case-diagram.puml (example)
+    - current
+      - requirements.md
+      - config.md
+      - diagrams
+        - auth-sequence-diagram.puml (example)
+        - payment-sequence-diagram.puml (example)
+        - use-case-diagram.puml (example)
+  - implementation
+    - overseer-review.md
+    - diagrams
+      - auth-sequence-diagram.puml (example)
+      - use-case-diagram.puml (example)
+
+## Persistence Model
+
+Two rules govern how information flows through the workflow. They apply to every stage and every command.
+
+### Rule 1 — Inputs live in files, not in conversation context
+
+Every mo-command resolves its inputs from known file paths at runtime. Conversation context is treated as ephemeral — sessions break, context gets compacted, and a single workflow may span multiple days across multiple Claude Code sessions. Any overseer-provided value (branch name, approvals, `/mo-continue` signals) is captured the moment it arrives and persisted to disk.
+
+Each command's `inputs:` list under "The Workflow Commands" is therefore a **file-path contract**, not a runtime parameter list. The overseer never passes values into commands; the millwright always reads them from canonical file locations:
+
+- **`quest/active.md`** — top-level pointer file with frontmatter `slug:` (the active subfolder) and `status:` (active | archived | none). All quest helpers resolve through it.
+- **`quest/<active-slug>/todo-list.md`** — todo items and their PENDING / IMPLEMENTING / IMPLEMENTED status.
+- **`quest/<active-slug>/summary.md`** — structured summary of journal resources.
+- **`quest/<active-slug>/progress.md`** — single workflow state file: `queue`, `completed`, and the nested `active` block carrying the currently-running feature's runtime state (branch, current-stage, sub-flow, base-commit, execution-mode, and `*-completed` flags). Co-located with `todo-list.md`, `summary.md`, and `queue-rationale.md` inside the same per-cycle subfolder; all four share the quest cycle's lifecycle. Schema documented in "The Workflow and the stages" below. The chain's spec/plan files (under `docs/superpowers/`) are intentionally NOT tracked here — those are the chain's own artefacts.
+- **`quest/<active-slug>/queue-rationale.md`** — audit of the stage-1.5 dependency-ordering decision. `features:` frontmatter mirrors `progress.md.queue`; body captures `<dependent> → <dependency>` edges with short reasons. Survives session breaks so the analysis isn't re-derived on resume. Like the rest of the cycle's files, it persists permanently under its slug subfolder once the cycle ends.
+- **`workflow-stream/[feature]/blueprints/current/`** — `requirements.md`, `config.md`, and `diagrams/` for the active feature.
+- **`workflow-stream/[feature]/implementation/`** — `overseer-review.md`, `review-context.md`, `change-summary.md`, and a `diagrams/` folder rendered from `base-commit..HEAD`.
+
+The only overseer inputs expected at runtime are:
+
+1. The **journal folder list**, given to `mo-run` at stage 1 — one or more sub-folders of `journal/` whose contents seed the new cycle's `todo-list.md` and `summary.md` (inside `quest/<new-slug>/`). Stage 1 no longer takes a branch argument; the feature branch is declared **per feature** in `blueprints/current/config.md`'s `## GIT BRANCH` section at stage 2, and validated at stage 3 (`/mo-plan-implementation`). `main`/`master` are refused at stage 3. Optional: pass `--archive-active` when an old cycle's pointer is still active and you want to retire it (without finishing) so the new one can open.
+2. **Marking PENDING items** in the active cycle's `todo-list.md` (under `quest/<active-slug>/`) followed by `/mo-continue` (twice — first to trigger promotion + dependency analysis + order proposal, second to confirm the proposed order). The Pre-flight Handler in `commands/mo-continue.md` carries out stage 1.5; the overseer no longer replies with free-form text here.
+3. **`/mo-continue` after blueprints** at the end of stage 2 — types it after reviewing `blueprints/current/`. The Approve Handler in `commands/mo-continue.md` validates the blueprint files and auto-fires `/mo-plan-implementation`. The millwright must never infer this signal from anything else.
+4. **`/mo-continue`** during stages 3–7 (in addition to its stage-1.5 and stage-2 uses), typed two or three times per feature: once after stage 3 (to trigger the post-chain resume handler), once after stage 5 (to trigger the overseer-review handler — which auto-completes if there are no findings, otherwise hands off to a review session), and one more time after stage 6 if findings were written (to trigger the post-review-session resume handler after the review session exits).
+5. **Planning-mode / review-mode picks** during stages 3 and 6 — the overseer answers `brainstorming` or `direct` when `mo-plan-implementation` and `mo-review` prompt for the launch mode. The choice is persisted to `progress.md` (`active.planning-mode`, `active.review-mode`).
+6. _(optional)_ **Edits to `overseer-review.md`** during stage 5 — findings (plain sentences or `### IR-NNN` blocks) if the overseer has concerns, empty file if they approve. The Overseer Handler in `commands/mo-continue.md` canonicalizes any plain-sentence findings into structured blocks before checking open-finding count.
+
+Every other value comes from disk.
+
+**Launcher commands (`mo-apply-impact`, `mo-plan-implementation`, `mo-complete-workflow`) are auto-invoked by the millwright on the gates above — the overseer does not type them during the happy path.** They remain invokable manually for recovery (after `/mo-abort-workflow`, or when `/mo-resume-workflow` explicitly recommends one).
+
+### Rule 2 — Documents cross-link via UUIDs, with paths as navigation hints
+
+Every .md file created or consumed by the workflow carries a YAML frontmatter info section. The canonical shape:
+
+```yaml
+---
+id: 8f3a7b2c-1234-4a5b-9c6d-0e1f2a3b4c5d # UUID v4, generated once at document creation
+contributors: [emin, ai-agent] # manual for journal docs, auto for generated docs
+date: 2026-04-19 # YYYY-MM-DD
+
+# Typed reference fields point at other documents' `id` values.
+# The field name indicates the kind of document being referenced.
+todo-list-id: 4c911d5e-1234-...
+requirements-id: a2b3c4d5-6789-...
+---
+```
+
+**Rules for IDs:**
+
+- **Never reuse an ID.** When a document is rewritten (e.g., `requirements.md` regenerated for a new iteration), generate a fresh UUID. The old ID remains discoverable under `blueprints/history/v[N]/`.
+- **Generate once, reference many times.** The `id` field is written once, on creation, by whichever command produces the document.
+- **Don't leave dangling references.** When populating a reference field, the millwright verifies the target document exists and its `id` matches the written value.
+
+This gives three properties for free: grep-based cross-reference discovery, rename-safe document identity, and an audit trail when combined with `blueprints/history/`.
+
+### Rule 3 — Layered context loading
+
+Stages that hand off to the brainstorming chain (stage 3 via `mo-plan-implementation`, stage 6 via `mo-review`) follow a **layered load** rather than passing every canonical file at full size on every entry. Each launcher writes a compact derived primer alongside the canonical files; the chain reads the primer first and only escalates to canonical files when a gap surfaces. Direct-mode runs of those same stages use the **same layered load** — the millwright reads the primer first and escalates as needed.
+
+| Stage | Required first read | Canonical fallbacks (on demand) |
+| --- | --- | --- |
+| 3 — implementation (brainstorming or direct) | `blueprints/current/primer.md` | `requirements.md`, `config.md`, `summary.md` (active feature section), `todo-list.md` |
+| 6 — review session (brainstorming or direct) | `implementation/review-context.md` + `implementation/overseer-review.md` | `requirements.md`, `config.md`, `summary.md` (active feature section), `blueprints/current/primer.md` |
+
+Properties of derived primers:
+
+- **Derived, not canonical.** They are snapshots; the canonical files remain the source of truth. If a primer falls behind, the canonical files win.
+- **Overwritten on regeneration.** Each writer (`mo-plan-implementation`, `mo-update-blueprint` for `primer.md`; `mo-review` for `review-context.md`) overwrites in place.
+- **Rotated with their parent folder.** `primer.md` rotates with `blueprints/current/` on stage 8 and `/mo-update-blueprint`. `review-context.md` and `change-summary.md` are cleaned up by `mo-complete-workflow` and `mo-abort-workflow`.
+- **Cross-refs stay live.** `review.sh sync-refs` re-points the `requirements-id` frontmatter on `overseer-review.md`, `review-context.md`, and `change-summary.md` after any mid-cycle blueprint rotation.
+
+**Cache-keyed reuse.** Stage-4 analysis is shared across `mo-generate-implementation-diagrams` and `/mo-update-blueprint` via `implementation/change-summary.md`. The frontmatter pair `(base-commit, head)` is the cache key; `commits.sh change-summary-fresh <feature>` exits 0 (fresh — reuse), 1 (stale — regenerate), or 2 (missing — generate). The artifact carries the changed-files list and the bounded analysis (entrypoints, suspected flows, omitted paths) so neither consumer re-walks the codebase from scratch when the range hasn't moved.
+
+`summary.md` itself is layered too: it is **feature-indexed** so a stage can read only `## Cross-cutting constraints` and `## Feature: <active>` instead of the whole digest. Other features' sections are reference-only for the active cycle.
+
+When adding a new launcher command that hands off to a long-running chain, follow the same pattern: write a compact primer immediately before invoking the chain, and document the layered-load order in the primer text.
+
+### Delegation guidance (optional)
+
+The mo-workflow's commands are written for the millwright (the main Claude Code session) to execute directly. For stages with broad inputs the millwright **may** delegate part of the work to a sub-agent (the `Task` / `Agent` tool) — but only when delegation actually reduces total context use, not when it just shifts the same reading into a different process.
+
+**When delegation is worth it:**
+
+- **Stage 1 (intake):** per-file summarization when one or more journal files exceed the size thresholds (see `/mo-run` Step 2.5). The sub-agent reads one large file and writes a per-file digest.
+- **Stage 1.5 (queue ordering):** codebase dependency inspection when ≥ 3 features need ordering. The sub-agent inspects references and writes the body of the active cycle's `queue-rationale.md` (under `quest/<active-slug>/`).
+- **Stage 2 (config filter):** skill/rule relevance filtering only when `.claude/skills/` + `.claude/rules/` together exceed ~30 entries. The sub-agent emits the filtered three-section list (`## Skills`, `## Rules`, `## Load on demand`).
+- **Stage 4 (change analysis):** writing the `implementation/change-summary.md` body for diffs that touch many areas. The sub-agent applies the bounded-context policy and writes the artifact.
+- **Stage 6 (finding clusters):** grouping > 5 open findings into clusters and proposing per-cluster scope. One sub-agent per cluster with disjoint write scopes.
+
+**Do NOT delegate:**
+
+- Workflow state mutations (`progress.sh`, `todo.sh`, `blueprints.sh`, `review.sh set-status`).
+- Stage transitions, command dispatch, or final approvals.
+- Anything that fits cleanly in the millwright's working context.
+
+**Output contract.** Sub-agents must keep their reply ≤ 20 lines and follow this shape:
+
+```
+## Scope
+<one short paragraph: what was inspected>
+
+## Findings
+- <short, source-linked bullet>
+
+## Decisions / Assumptions
+- <assumption with confidence>
+
+## Artifacts Written
+- <path>
+
+## Main-Agent Action Needed
+- <one concrete next step, or "none">
+```
+
+Detailed evidence belongs in the artifact files (the `## Artifacts Written` paths), not in the chat. The millwright reads the artifacts; the chat reply is just the routing slip.
+
+**Capability and effort tiers.** Pick the smallest tier that can produce the artifact safely.
+
+| Work type | Recommended tier |
+| --- | --- |
+| Mechanical extraction (file manifests, source maps, changed-file groupings) | Small/fast model, low effort |
+| Bounded interpretation (feature summaries, queue dependencies, config relevance) | General reasoning model, medium effort |
+| Cross-file analysis (`change-summary.md` body, finding clusters) | Strong code-analysis model, high effort |
+| Architecture / security / re-spec assessments | Most capable model, high or extra-high effort |
+
+**Anti-patterns:**
+
+- Multiple sub-agents reading the same broad input. If two need the same context, run one and share its artifact.
+- Returning full diffs, raw source excerpts, or whole-file contents in the chat reply.
+- Mutating central workflow state from a sub-agent unless its assignment explicitly says so.
+- Using the most capable tier for work a lightweight tier can do safely.
+
+When delegation makes sense for a specific command, that command's documentation has a brief "Delegation (optional)" subsection naming the sub-agent task and the artifact it should produce.
+
+### Diagram conventions
+
+All PlantUML diagrams generated by the workflow follow the same rules, regardless of which command produces them (`mo-apply-impact` for requirements-level, `mo-generate-implementation-diagrams` for implementation-level):
+
+- **Use-case diagram — mandatory, exactly one per feature.** Shows actors (users, external systems, cron jobs) and the feature's public capabilities. Filename: `use-case-<feature>.puml` (e.g., `use-case-payments.puml`).
+- **Sequence diagrams — conditional, one per significant end-to-end flow.** Generate one per user-facing action described in `requirements.md` (e.g., "user submits payment", "user cancels subscription"). Aim for 1–5 sequence diagrams per feature; needing more than 5 is a signal the feature should be decomposed into sub-features, and the millwright should flag this to the overseer. Filename: `sequence-<flow>.puml` (e.g., `sequence-payment-submit.puml`, `sequence-payment-refund.puml`).
+- **Class diagram — conditional, only when the feature introduces 3+ new domain classes/modules with non-trivial relationships.** Skip for simple CRUD on a single entity. Filename: `class-<domain>.puml` (e.g., `class-payment-domain.puml`).
+- **File naming rules.**
+  - Lowercase kebab-case.
+  - `<type>-<subject>.puml` where type ∈ `{use-case, sequence, class}`.
+  - One diagram per file. Do not combine multiple diagram types in a single `.puml`.
+- **Scope alignment.** The two diagram locations show the same feature at two stages: requirements (`blueprints/current/diagrams/`) and implementation (`implementation/diagrams/`). The diagram set should share subject names across both locations — e.g., if `sequence-payment-submit.puml` exists in `blueprints/current/diagrams/`, it should also exist in `implementation/diagrams/` so the overseer can diff requirements-vs-implementation. Within the implementation diagrams, intent-vs-reality is expressed *inside* each diagram via the existing-vs-new framing convention rather than via a separate pre-set.
+- **Existing-vs-new framing (implementation diagrams only).** Diagrams under `implementation/diagrams/` distinguish pre-existing system elements from new functionality with a fixed visual convention so the overseer reads every diagram the same way: pre-existing participants/classes sit inside a `box "Existing system" #EEEEEE … end box` (sequence) or a tinted `package "Existing" #EEEEEE { … }` (class/use-case); pre-existing arrows/activations are shaded `#888888`/`#EEEEEE`; new elements use default skin. Each diagram includes a small `legend right … endlegend` block documenting the convention. See `commands/mo-generate-implementation-diagrams.md` for the canonical PlantUML snippets.
+- **Info section.** Each `.puml` file has no YAML (PlantUML's comment syntax differs), but the enclosing `diagrams/` folder has a sibling `README.md` with a YAML info section that carries the `requirements-id` back-reference and lists all diagrams in the folder.
+
+### Branch contract
+
+The git branch is owned by the overseer end-to-end. The mo-workflow never creates, deletes, or force-updates branches.
+
+- **Creation.** The overseer creates and checks out the feature branch whenever it fits their rhythm — before `mo-run`, between stages 1 and 2, or just before approving blueprints. The branch is declared **per feature** in `blueprints/current/config.md`'s `## GIT BRANCH` section.
+- **Pre-fill at stage 2.** When `mo-apply-impact` writes `config.md`, it populates the `## GIT BRANCH` section with the current HEAD if HEAD is on a non-trunk branch. Otherwise the section is left blank for the overseer to fill in manually.
+- **Validation at stage 3.** `mo-plan-implementation` reads the `## GIT BRANCH` section and verifies:
+  - exactly **one** branch line is present (multiple lines → the millwright prompts the overseer to pick one, since each feature has its own review scope);
+  - the branch is not `main` or `master`;
+  - the branch is the currently checked-out branch (`git rev-parse --abbrev-ref HEAD` matches).
+  - If the section is empty, the millwright prompts the overseer in chat OR asks them to edit `config.md` and re-invoke — either path is valid.
+- **One branch per feature.** Each feature in `progress.md`'s `queue` has its own `config.md` with its own `## GIT BRANCH`. Features can share a branch or use different branches freely — the plugin doesn't enforce sameness across the queue. If a feature genuinely needs coordinated work across multiple branches, the overseer should split it into two features in the todo list rather than listing multiple branches in one `## GIT BRANCH` section.
+- **Persistence.** Once validated at stage 3, the primary branch is written to `progress.md`'s `active.branch` (which is `null` until then) and the `base-commit` is captured from HEAD into `active.base-commit`. Review scope (`/mo-review`) and diffs rely on both.
+
+### Blueprint lifecycle: rotation and reason.md
+
+`blueprints/current/` is a **living** snapshot of the active feature's design. It can be refreshed whenever the overseer's requirements shift — during brainstorming, during a review loop, or on manual demand. Every refresh is a rotation: the previous `current/` content moves into `blueprints/history/v[N+1]/` and a new `current/` is regenerated. **The regeneration source depends on the trigger:** stage 2's first-time generation (`mo-apply-impact`) is **quest-driven** and reads from the active cycle's `summary.md` (under `quest/<active-slug>/`) plus the codebase per `docs/blueprint-regeneration.md`. Mid-cycle refreshes (`/mo-update-blueprint`, also auto-fired by the stage-4 drift check) are **implementation-driven** — they read from `implementation/change-summary.md` plus targeted `git diff base-commit..HEAD` hunks; the journal and the cycle's quest files are intake artifacts that don't drift after stage 1.5 and are deliberately not consulted. Each history version carries a sibling `reason.md` that records why the rotation fired.
+
+**Rotation triggers.**
+
+| Trigger | Reason kind (`reason.md`) | Prompt / condition |
+| --- | --- | --- |
+| Stage 8 (`mo-complete-workflow`) — happy-path close-out of the feature. | `completion` | Always, no prompt. |
+| `/mo-continue` post-chain (stage-4 resume) — brainstorming may have shifted scope. | `manual` (via `/mo-update-blueprint`) | The resume handler prompts the overseer for a one-line reason; if supplied, it invokes `/mo-update-blueprint <reason>`. The drift check itself does not read the chain's spec/plan files — the overseer is the authority on whether requirements drifted. (The separate abandoned-chain check in Resume Step 2.5 *does* read them read-only, but only to compose a resume primer, not to detect drift.) |
+| Review-loop `re-spec` cascade (stage 6 overseer-review session). | `re-spec-cascade` | Unconditional — re-spec by definition means design-level change. |
+| Review-loop `re-plan` cascade. | `re-plan-cascade` | Millwright prompts the overseer to confirm whether the regenerated plan also shifted requirements; rotates only on `yes`. No auto-detection (mo-workflow doesn't track plan paths). |
+| `/mo-update-blueprint <reason>` — overseer-invoked manual refresh. | `manual` | The overseer-supplied reason becomes the `summary`. |
+
+All rotations route through `scripts/blueprints.sh rotate <feature> --reason-kind <kind> --reason-summary <text>`, which moves `current/*` into `history/v[N+1]/` and writes `reason.md` using `templates/reason.md.tmpl` + `schemas/reason.schema.yaml`. Content regeneration after rotation differs by caller: `mo-apply-impact` (stage 2, no implementation yet) follows `docs/blueprint-regeneration.md` — the **quest-driven runbook** (journal is consulted only at stage 1; stage 2 reads the active cycle's `summary.md` under `quest/<active-slug>/` as the digest, not `journal/` directly); `/mo-update-blueprint` (mid-cycle, implementation exists) uses its own inline logic that reads from the codebase + the just-rotated history version (see `commands/mo-update-blueprint.md` Step 4). Mid-cycle callers must invoke `blueprints.sh preserve-overseer-sections` after regeneration to splice `## GIT BRANCH` and `## Overseer Additions` forward from history; the regeneration logic does not preserve them by itself.
+
+**Review-file sync on mid-loop rotation.** When a rotation fires while `overseer-review.md` already exists (i.e. during a review session), the file's `requirements-id` frontmatter is updated to point at the newly-regenerated `requirements.md`. This keeps the in-flight brainstorming review session pointing at live scope rather than the rotated-away version. `scripts/review.sh sync-refs <feature>` is the helper; it's a no-op when the review file is absent.
+
+**Scope of `requirements.md.todo-item-ids`.** The array captures the todo items that **initiated** the current cycle — the PENDING set at stage 2 (or the IMPLEMENTING set at the time of any mid-cycle regeneration). It does **not** grow to include every concern surfaced during brainstorming or review; scope expansions land in the requirements body and are tracked via `/mo-update-todo-list add <feature> IMPLEMENTING ...` if they warrant a new todo id. Similarly, the active cycle's `todo-list.md` (under `quest/<active-slug>/`) is independent of blueprint rotation — rotation never touches todos, and `/mo-update-todo-list` never rotates the blueprint. The two are deliberately decoupled: `todo-list.md` is "what the overseer asked for"; `blueprints/current/` is "what the chain figured out we need to build to deliver those asks."
+
+### Review File Schema
+
+The single review file `overseer-review.md` follows the schema below. The overseer fills it in during stage 5; the brainstorming review session iterates against it during the stage-6 loop (which runs isolated from mo-workflow).
+
+Review is implementation-only: findings compare the commits in `base-commit..HEAD` against `requirements.md` (the millwright-owned contract). The chain's plan / spec files under `docs/superpowers/` are not part of the review surface — they're the chain's internal artefacts and are regenerated by the chain itself when a `re-plan` / `re-spec` cascade fires.
+
+**File shape:**
+
+```markdown
+---
+id: <uuid>
+requirements-id: <uuid of related requirements.md>
+---
+
+## Implementation Review
+
+### IR-001 — <one-line summary>
+
+- **severity**: blocker | major | minor
+- **scope**: fix | re-implement | re-plan | re-spec
+- **status**: open | fixed | wontfix
+- **details**: |
+  Multi-line context. What was reviewed, what went wrong, which file or commit
+  is implicated. Reference other findings by id (e.g., "related to IR-003").
+- **fix-note**: populated when status transitions to `fixed` or `wontfix`, otherwise empty.
+
+### IR-002 — ...
+
+## Iteration 2
+
+(new findings discovered after the first fix pass, nested under `## Iteration N`. Added only on the second pass onward.)
+```
+
+**ID rules:**
+
+- Finding ids are `IR-NNN`, zero-padded to three digits, monotonically incrementing.
+- IDs are **never reused** within a workflow.
+- IDs are stable across iterations: a fix that lands in iteration 2 is still tagged with the original IR-005 id; its `status` flips from `open` to `fixed`, and `fix-note` explains what changed.
+
+**Severity rules:**
+
+- **blocker**: must be resolved; cannot proceed to stage 8 while `open`.
+- **major**: should be resolved; flagged in the mo-complete-workflow summary if still `open`.
+- **minor**: optional; may be `wontfix` without further justification.
+
+**Scope rules:**
+
+`scope` classifies the smallest rework that genuinely addresses the finding. It controls which step of the brainstorming → writing-plans → executing-plans chain the millwright re-enters when applying fixes. The millwright picks the value at review time; for overseer-written findings left blank, the millwright classifies before acting.
+
+- **fix** — the finding is addressed by a patch to existing code (typo, missing edge case, minor logic, small refactor, test gap). No chain re-entry.
+- **re-implement** — the plan is sound but the code diverged; the millwright re-invokes `executing-plans` (or `subagent-driven-development`) to rewrite the affected sections against the existing plan.
+- **re-plan** — the chain's plan was wrong or incomplete (missed task, wrong ordering, misconceived task); the millwright re-invokes `writing-plans` with a concern bundle, which cascades through `executing-plans`. The chain regenerates the plan internally; mo-workflow does not track plan paths.
+- **re-spec** — the underlying design is wrong (wrong abstraction, wrong approach, wrong API shape); the millwright re-invokes `brainstorming`, which cascades through `writing-plans` and `executing-plans`. The chain regenerates its own spec/plan internally and produces fresh commits. Use sparingly: this invalidates the current implementation. Before triggering, the millwright surfaces a short "scope of impact" summary to the overseer so the decision is visible.
+
+**Priority for acting on open findings (tier-0 wins):**
+
+The brainstorming review session (launched during stage 6 by `/mo-review`, which advances 5→6 before invoking the Skill) addresses findings in **descending order of chain impact**, because each higher tier supersedes the lower ones in the same pass:
+
+1. **re-spec** findings first — one re-entry produces a fresh spec, plan, and implementation; all previously-open lower-scope findings are marked `fixed` with `fix-note: "superseded by re-spec at iteration N"` since the code that drew them no longer exists.
+2. **re-plan** findings next, against the current spec. Cascades through executing-plans; existing re-implement/fix findings are similarly superseded.
+3. **re-implement** findings, against the current plan. Existing fix findings may still apply or be superseded depending on what sections were rewritten — the next review iteration resolves the ambiguity.
+4. **fix** findings are patched individually last.
+
+The brainstorming session controls this dispatch internally; mo-workflow does not encode the cascade. Finding ids keep incrementing monotonically across loop iterations within `overseer-review.md`.
+
+**Status transitions:**
+
+- `open` → `fixed`: the millwright (or overseer) addressed the finding; `fix-note` describes how.
+- `open` → `wontfix`: the finding is declined with justification in `fix-note`. Must be signed off by the overseer for blocker/major severities.
+- `fixed` / `wontfix` → `open`: only re-opens if a later iteration surfaces regression.
+
+**Empty / skeleton state:**
+
+When the millwright first creates `overseer-review.md` at the end of stage 4, it writes only the frontmatter + an empty `## Implementation Review` section (no finding blocks). The stage-5 `/mo-continue` handler treats the presence of at least one `### IR-NNN` block as "has findings"; absence means "approved with no findings."
+
+### Skill references
+
+Skill names in this document (e.g., `brainstorming`, `writing-plans`, `executing-plans`, `subagent-driven-development`, `finishing-a-development-branch`) must be available to the session. Two equivalent sources are accepted:
+
+- the `superpowers` plugin installed in the host Claude Code session (resolves names like `superpowers:brainstorming`), or
+- local `SKILL.md` files under `.claude/skills/<name>/`.
+
+The mo-workflow treats these sources as interchangeable and uses whichever naming the host session surfaces. `/mo-doctor` verifies each of the five skill names is resolvable via at least one source on first run and prints the exact `/plugin marketplace add` + `/plugin install` slash commands (or the `.claude/skills/` drop-in path) when one is missing. These skills are **not** declared as a Claude Code plugin dependency in `plugin.json` — that would block millwright-overseer-development-machine from loading before `/mo-doctor` could guide the install.
+
+## Roles × Plugin Interaction
+
+A condensed map of who interacts with which plugin surface, why, and at which stage. Detailed semantics for each command live in "The Workflow Commands" below; this section is for orientation.
+
+**Actors:**
+
+- **Overseer** — the human. Authors journal content, marks selections, approves blueprints, picks planning-mode and review-mode, writes findings, types every `/mo-continue`. Owns the git branch end-to-end.
+- **Millwright** — the AI agent (Claude Code main session). Generates every artifact under `quest/`, `blueprints/current/`, and `implementation/`. Dispatches inside `/mo-continue`. Auto-fires launcher commands at each gate.
+- **Plugin internals** — the PostToolUse frontmatter validator, the auto-fired launcher commands (`mo-apply-impact`, `mo-plan-implementation`, `mo-review`, `mo-draw-diagrams`, `mo-complete-workflow`), and the `plantuml-mcp-server` MCP integration.
+
+**Touchpoint map** (chronological by stage):
+
+| Stage | Actor | Surface | Action |
+| ---: | --- | --- | --- |
+| 0 | Overseer | `journal/<topic>/*.md` `.txt` (and `/mo-ingest` for non-text) | Authors raw inputs; sets `contributors:` + `date:` frontmatter on `.md`. |
+| setup | Overseer | `/mo-init`, `/mo-doctor`, `/mo-ingest` | One-prompt setup wizard, detailed dep check, non-text ingestion. |
+| 1 | Overseer | `/mo-run <folder1> [<folder2> ...]` | Triggers quest generation. Creates a fresh per-cycle subfolder under `quest/`. No branch arg. |
+| 1 | Millwright | `quest/<active-slug>/{todo-list, summary, progress, queue-rationale}.md` + `quest/active.md` (pointer) | Writes the four quest files into the new per-cycle subfolder; updates the top-level pointer; sets `active=null`. |
+| 1.5 | Overseer | active cycle's `todo-list.md` (under `quest/<active-slug>/`) | Marks `[x]` and adds `(assignee)` tag for items in scope. |
+| 1.5 | Overseer | `/mo-continue` ×2 | First call: Pre-flight Step 2A (`pend-selected`, propose order). Second call: Step 2B (write the cycle's `queue-rationale.md`, reorder, auto-fire `/mo-apply-impact`). |
+| 2 | Millwright (auto) | `/mo-apply-impact` | `progress.sh activate`, generate `blueprints/current/`. Pre-fills `## GIT BRANCH` from HEAD. |
+| 2 | Overseer | `blueprints/current/{requirements.md, config.md, diagrams/}` | Reviews. May edit `## Overseer Additions` and `## GIT BRANCH`. |
+| 2 → 3 | Overseer | `/mo-continue` | Approve Handler validates files and auto-fires `/mo-plan-implementation`. |
+| 3 | Millwright (auto) | `/mo-plan-implementation` | PENDING→IMPLEMENTING; captures `base-commit`; validates branch; writes `primer.md`; asks for `planning-mode`. |
+| 3 | Overseer | Chat reply (`brainstorming` \| `direct`) | Picks planning-mode; persisted to `progress.md`. |
+| 3 | Overseer + chain (brainstorming) OR Millwright (direct) | Codebase, `primer.md`, optional canonical fallbacks | Implements the feature. Commits land on the active branch. |
+| 3 → 4 → 5 | Overseer | `/mo-continue` | Resume Handler: verifies commits, optional drift check (`/mo-update-blueprint`), auto-fires `/mo-draw-diagrams`, creates review skeleton. |
+| 4 | Millwright (auto) | `/mo-draw-diagrams` (= `mo-generate-implementation-diagrams`) | Renders implementation diagrams with existing-vs-new framing into `implementation/diagrams/`. Uses `change-summary.md` cache. |
+| 5 | Overseer | `implementation/overseer-review.md` | Writes findings as plain sentences or `### IR-NNN` blocks. Empty file = approval. |
+| 5 → 7 (no findings) | Overseer | `/mo-continue` | Overseer Handler canonicalizes free-form findings; if none open, auto-fires `/mo-complete-workflow`. |
+| 5 → 6 (with findings) | Overseer | `/mo-continue` | Overseer Handler auto-fires `/mo-review`; control returns to overseer. |
+| 6 | Millwright (auto) | `/mo-review` | Writes `review-context.md`; asks for `review-mode`; dispatches to brainstorming session or direct loop. |
+| 6 | Overseer | Chat reply (`brainstorming` \| `direct`), then drives the session | Addresses findings via chain or directly; ends with `approve`. |
+| 6 → 7 → 8 | Overseer | `/mo-continue` | Review-Resume Handler: sanity-check, advance 6→7, optional diagram refresh, auto-fire `/mo-complete-workflow`. |
+| 8 | Millwright (auto) | `/mo-complete-workflow` | IMPLEMENTING → IMPLEMENTED, populate `commits:`, rotate blueprint, **archive `implementation/` artifacts into the rotated `blueprints/history/v[N]/implementation/`** (preserving findings, review-context, change-summary, and diagrams), `progress.sh finish`. Loops to next queued feature or asks for more TODO marks. |
+| recovery | Overseer | `/mo-abort-workflow [--drop-feature=...]`, `/mo-resume-workflow`, `/mo-update-blueprint <reason>`, `/mo-update-todo-list <subcmd>` | Safe-cancel, state diagnosis, manual blueprint refresh, manual todo edits. |
+| always | Plugin internals | `hooks/validate-on-write.sh` (PostToolUse) | Validates frontmatter on every Write/Edit to a workflow `.md`; blocks the turn on schema failure. No-op outside data root. |
+| 2, 4 | Plugin internals | `plantuml-mcp-server` (MCP) | Renders `.puml` diagram sources to images. |
+| optional | Plugin internals | `rtk` (companion), `docling` (companion) | Token-saving shell-output filter; document → markdown converter. Detected by `/mo-doctor`; never required. |
+
+**Key isolation points:**
+
+- The stage-3 brainstorming chain and the stage-6 brainstorming review session both run **isolated from mo-workflow**. Mo-workflow only re-engages when the overseer types `/mo-continue` after the session exits.
+- Mo-workflow **never writes** to the chain's spec/plan files under `docs/superpowers/`, and in the happy path **never reads** them either — the commit range `base-commit..HEAD` is the canonical implementation contract. The single read exception is `/mo-continue`'s abandoned-chain recovery branch (Resume Step 2.5): when the overseer reports an interrupted stage-3 run, the handler reads the plan + spec **read-only** to compose a resume primer for re-launching the chain. All writes to `docs/superpowers/` remain the chain's domain.
+- The git branch is owned by the overseer end-to-end. Mo-workflow never creates, deletes, or force-updates branches.
+
+## The Workflow and the stages
+
+Below is the description of the workflow. The central `progress.md` file (schema shown above under "progress.md (central workflow state)") tracks workflow progression so execution can resume after a session break, and records hand-off metadata whenever the millwright yields control to an external skill chain (brainstorming → writing-plans → executing-plans / subagent-driven-development).
+
+The `active` block inside `progress.md` holds per-cycle runtime state — null between workflows, populated between stages 2 and 8. Its fields:
+
+- **feature**: name of the feature/module this cycle targets (mirrors the `[feature]` segment of the `workflow-stream/` folder path). Written by `progress.sh activate` when stage 2 fires.
+- **branch**: git branch name that carries the implementation commits. Initialized to `null` by activate (branch isn't known yet at stage 2). Written by `mo-plan-implementation` at stage 3 after it parses and validates `blueprints/current/config.md`'s `## GIT BRANCH` section.
+- **current-stage**: integer 2–8 (active block only exists within this range). Advances through `progress.sh advance`.
+- **sub-flow**: one of `none | chain-in-progress | resuming | reviewing`. Set to `chain-in-progress` by `mo-plan-implementation` immediately before invoking the brainstorming skill at stage 3, and reset to `none` after the overseer types `/mo-continue` and the millwright has successfully consumed the chain's outputs. Set to `reviewing` by `/mo-review` when it launches the stage-6 brainstorming review session, and reset to `none` by the post-review-session resume handler in `/mo-continue` after the overseer signals the session ended. Value `resuming` is set during the stage-4 `/mo-continue` handler. The millwright never inspects sub-flow _during_ the chain — both the stage-3 chain and the stage-6 review session run in fully isolated Claude Code session flows.
+- **base-commit**: git SHA captured at the start of stage 3 (before brainstorming is invoked). Used later by `/mo-review`, `mo-generate-implementation-diagrams`, and `mo-complete-workflow` to scope the implementation diff to `base-commit..HEAD`. The chain's spec/plan files are intentionally NOT tracked in `progress.md` — those are the chain's own artefacts; mo-workflow reads only the commit range.
+- **execution-mode**: one of `subagent-driven | inline | none`. Recorded when the overseer picks an execution option inside writing-plans (only meaningful for `planning-mode: brainstorming`; `direct` mode does not enter writing-plans).
+- **planning-mode**: one of `brainstorming | direct | none`. Set by `mo-plan-implementation` at stage 3 when it asks the overseer to pick a launch mode. `brainstorming` invokes the brainstorming → writing-plans → executing-plans chain in an isolated session (the legacy default). `direct` skips the Skill — the millwright reads `primer.md` and implements in the main session. `none` until the choice is made.
+- **review-mode**: one of `brainstorming | direct | none`. Set by `mo-review` at stage 6 when it asks the overseer to pick a review-loop mode. `brainstorming` invokes a brainstorming review session (isolated). `direct` keeps the review loop in the main session: the millwright addresses each finding directly. `none` until the choice is made.
+- **implementation-completed**: boolean. True once the execution sub-flow exits and implementation commits are on the branch.
+- **overseer-review-completed**: boolean. True once the stage-6 review session exits with overseer approval and no new findings added (set by the post-review-session resume handler in `/mo-continue`), or set directly at stage 5 when the overseer approved with no findings.
+
+Stages 0 (journal intake) and 1 (mo-run) are workflow-wide and implied by the absence of progress.md (stage 0) or its presence with `active: null` (stage 1 done). On resume, the millwright reads `active` to decide which command to run next. Stages are defined below.
+
+### The Workflow
+
+1. Everything starts by populating the **journal** folder with documents. Both `.md` and `.txt` files are accepted — pick whichever format fits the source (meeting transcripts are typically `.txt`; notes and specs are typically `.md`). One thing important here is that every `.md` file which is generated or used by the workflow has an info section at the beginning of the document which holds information and references to other `.md` documents. When users add a `.md` document into the journal folder, they should manually add the **contributors** and **date** fields at the top. `.txt` files have no frontmatter requirement and are read as plain content.
+2. When the overseer asks the millwright to perform a task, they invoke `mo-run` passing one or more `journal/` sub-folder names (the topics this workflow cycle will cover). No branch arg — that's deferred to stage 2's `config.md` and validated at stage 3. `/mo-run` first creates a fresh per-cycle subfolder under `quest/` (named after a date-prefixed slug derived from the journal folders) and updates `quest/active.md` to point at it. Older cycle subfolders are kept untouched as a permanent record. If a previous cycle is still active and the overseer wants to start fresh anyway, they pass `--archive-active` to retire it.
+   `mo-run` command then generates these files inside `quest/<active-slug>/`:
+   - **todo-list.md**: explained in the ####Journal section above. Has data in info section which are:
+     1. **id**: random generated UUID
+     2. **related-features**: feature/module name list. those names may be existing features in the project or the name of the to-be-implemented.
+     3. **description**: description of the work to be done.
+   - **summary.md**: generated structured summary of all resources. Used for understanding the context of the resources or work to be done. The body is **feature-indexed** so downstream stages can read only the active feature's section instead of the whole digest:
+     - `## Cross-cutting constraints` — concerns that apply to every feature this cycle.
+     - `## Out-of-scope` — items explicitly excluded from this cycle's roadmap.
+     - One `## Feature: <name>` section per feature in `features:`, each self-contained.
+
+     Frontmatter:
+     1. **todo-list-id**: reference to the todo-list.md file id.
+     2. **features**: kebab-case feature names matching the body's `## Feature: <name>` headings — same set as todo-list.md's `related-features`.
+     3. **keywords**: keywords in the file.
+     4. **description**: a brief description of the summary of related journal items.
+
+3. After the **todo-list.md** had been generated:
+   - ask the overseer to mark the todo items they want this cycle to cover by putting an `x` in their checkbox AND adding an `(assignee)` tag (`- [ ] TODO — ...` → `- [x] (emin) TODO — ...`). Unselected items stay as `[ ] TODO`; pre-assigned-but-not-selected items (`- [ ] (emin) TODO — ...`) are also fine.
+   - when done marking, the overseer types `/mo-continue`. The Pre-flight Handler in `commands/mo-continue.md` runs `todo.sh pend-selected` — which converts every `[x] (<assignee>) TODO` line into `[x] (<assignee>) PENDING` in one pass. If any `[x] TODO` line lacks an assignee tag, the script exits `2` without modifying the file and prints the offending item ids on stderr; the millwright relays those to the overseer, who adds names and re-types `/mo-continue`. Once promotion succeeds, the handler groups the PENDING items by feature/module. If they span multiple features, the handler inspects the codebase to resolve dependencies (e.g., if module A blocks module B, A runs first) and presents the prioritized ordering to the overseer.
+   - the overseer accepts by typing `/mo-continue` again (or pastes a custom order in chat first, then `/mo-continue`). The Pre-flight Handler then writes the active cycle's `queue-rationale.md` (under `quest/<active-slug>/`), runs `scripts/progress.sh reorder <feature1> <feature2> ...` (which validates the new order is a permutation of the existing queue and refuses to run while a feature is active), and auto-fires `/mo-apply-impact` for `queue[0]`. `progress.md` is the single source of truth for which features remain to be worked on; the millwright reads it on every resume and between workflows.
+4. When the overseer types `/mo-continue` after seeing the proposed queue order, the millwright (via the Pre-flight Handler's Step 2B) **auto-invokes** `mo-apply-impact` (the overseer does not type the command). `mo-apply-impact` calls `progress.sh activate` to pop `queue[0]` into a fresh `active` block (feature set from the popped value, branch=null, current-stage=2, all other runtime fields at defaults), and generates the `[feature]/blueprints/current` folder content which is:
+   - **requirements.md**: generate the requirements for the selected todo list items, summary.md and by checking the codebase and config.md. Frontmatter fields:
+     - add **id** field to info section to this file by generating an uuid.
+     - add **todo-list-id** which is a reference to the related **todo-list.md** (**todo-list-id** should be the same value with the **id** field of the related **todo-list.md** file)
+     - add **todo-item-ids** which is the id array of the todo list items which had status as PENDING in the related **todo-list.md** file.
+     - add **commits** which is a list of commits (currently empty)
+
+     The requirements.md **body** must contain three clearly-labeled scope sections so the brainstorming chain at stage 3 can distinguish "deliver now" from "design for later" from "not in the roadmap":
+     1. **`## Goals (this cycle)`** — what the PENDING items (scoped to the active feature's section in `todo-list.md`) deliver. The primary deliverable.
+     2. **`## Planned (future cycles)`** — the TODO items still in the **same feature's** section of `todo-list.md` that were NOT selected this cycle. These WILL be implemented in a later cycle, so the current design must leave appropriate architectural seams (interfaces, extension points, abstractions) for each one to land without a rewrite. `mo-apply-impact` fetches this list via `todo.sh list TODO --feature "$active_feature"`. Omit the section entirely if no such items exist.
+     3. **`## Non-goals (out of scope)`** — items explicitly excluded from the feature's roadmap. Sourced from the active cycle's `summary.md` (any journal-sourced exclusions are captured there at stage 1; under `quest/<active-slug>/`), `config.md`'s `## Overseer Additions`, or overseer statements in chat. These are NOT on the TODO list. May be omitted if empty.
+
+     **Critical distinction:** a "Planned" item is future work that the current implementation must accommodate. A "Non-goal" item is something the implementation can safely assume away. Lumping unselected TODO items into Non-goals — as earlier versions of this command did — is a regression that can force painful rewrites when those items are later implemented.
+
+   - **config.md**: split into two ownership zones so `mo-apply-impact` can regenerate the auto-summary without clobbering the overseer's custom prompts. The canonical shape:
+
+     ```markdown
+     ---
+     id: <uuid>
+     requirements-id: <uuid of the related requirements.md>
+     ---
+
+     <!-- auto:start — regenerated by mo-apply-impact; do not edit this section -->
+
+     ## Skills
+
+     (auto-generated summaries of each skill under `.claude/skills/`)
+
+     ## Rules
+
+     (auto-generated summaries of each rule under `.claude/rules/`)
+
+     <!-- auto:end -->
+
+     ## Overseer Additions
+
+     (anything below this marker is preserved verbatim across regenerations — put custom prompts, MCP invocations like "get figma files from <url>", project-specific instructions, etc. here)
+     ```
+
+     `mo-apply-impact` replaces only the content between `<!-- auto:start -->` and `<!-- auto:end -->` markers. Everything below `## Overseer Additions` is preserved verbatim on every regeneration. The **requirements-id** field in the info section cross-references the related `requirements.md`'s `id`.
+
+   - diagrams: generate related use-case diagram for the feature, generate all sequence diagrams which you find necessary by using the uml generator mcp (plantuml mcp)
+     - add **requirements-id** field to info section which is a reference to the generated **requirements.md** id field avaialble at its info section.
+
+5. Inform the overseer that the `workflow-stream/[feature]/blueprints/current/requirements.md`, `workflow-stream/[feature]/blueprints/current/config.md` and `workflow-stream/[feature]/blueprints/current/diagrams` have been generated and ask them to review. Instruct the overseer that when ready they should type `/mo-continue`; the Approve Handler in `commands/mo-continue.md` will validate the blueprint files and auto-launch `mo-plan-implementation`. Also inform the overseer about the next stage which is:
+   - planning phase by using the `brainstorming` skill (already registered under `.claude/skills/` in this project — see the "Skill references" note at the end of this section), OR direct implementation in the main session — the overseer picks at the start of stage 3 (see item 6).
+6. When the overseer types `/mo-continue` (the stage-2 review gate), the millwright (via the Approve Handler) **auto-invokes** `mo-plan-implementation`. This command is a **pure launcher** and does the following atomically:
+   1. updates the selected todo items PENDING → IMPLEMENTING in the active cycle's `todo-list.md`.
+   2. captures `git rev-parse HEAD` into `progress.md` as **base-commit**.
+   3. sets **sub-flow** to `chain-in-progress` in `progress.md`.
+   4. composes `workflow-stream/[feature]/blueprints/current/primer.md` — a compact snapshot of active scope, goals (from `requirements.md`), journal context (from `summary.md`'s `## Feature: <active>` section), and likely-relevant skills/rules (from `config.md`). See "Rule 3 — Layered context loading" above.
+   5. **asks the overseer to pick a planning-mode** (`brainstorming` or `direct`) and persists the choice to `progress.md` (`active.planning-mode`). See "Planning-mode and review-mode" below for what each mode means.
+   6. **brainstorming mode:** invokes the brainstorming skill with `primer.md` as the required first read; `config.md`, `requirements.md`, the active cycle's `summary.md` (active feature section), and the active cycle's `todo-list.md` are listed as on-demand fallbacks. **direct mode:** the millwright reads `primer.md` itself, escalates to canonical files only as needed, and implements directly in the main session.
+
+   After step 6 the millwright does NOT interfere with the chain (in brainstorming mode). The brainstorming → writing-plans → executing-plans / subagent-driven-development → finishing-a-development-branch chain runs as a completely isolated interactive session. The overseer answers design questions, approves the spec, approves the plan, picks an execution mode, and interacts with the execution skill exactly as they would in any normal Claude Code session. No mo-workflow commands are expected during this phase — the overseer should not be thinking about the mo-workflow at all while brainstorming is live.
+
+   In direct mode, the overseer reviews the millwright's work inline as it happens; commits land on the active branch as the millwright produces them.
+
+   When the chain (or direct implementation) finishes and control returns to the main thread, the overseer types `/mo-continue` once. This is the single resumption signal and the only mo-workflow touchpoint required between launch and reviews. The `/mo-continue` handler resumes the workflow as described in item 7 below.
+
+7. When the overseer types `/mo-continue` after the chain has returned, the millwright's resume handler runs atomically:
+   1. sets **sub-flow** to `resuming` in `progress.md`.
+   2. runs `git log --oneline base-commit..HEAD` — if there are no commits, informs the overseer and aborts (the chain did not produce implementation, or the chain hasn't fully exited yet). Direct-mode implementations satisfy the same check by committing during stage 3.
+   3. sets **implementation-completed** = true and advances stage 3 → 4.
+   4. prompts the overseer with a blueprint-drift check: *"Did anything in requirements change during brainstorming? Reply with a short reason to trigger `/mo-update-blueprint`, or `continue` to skip."* If the overseer supplies a reason, the handler invokes `/mo-update-blueprint <reason>` (which rotates `blueprints/current/` into history and regenerates Goals + diagrams + primer.md from the codebase, preserving overseer-authored sections + roadmap from the rotated version). The chain's spec/plan files are NOT read; the overseer is the authority on whether requirements drifted.
+   5. invokes `/mo-draw-diagrams` (the user-facing wrapper around `mo-generate-implementation-diagrams`) to render use-case, sequence, and (if relevant) class diagrams of `base-commit..HEAD` into `workflow-stream/[feature]/implementation/diagrams`, with pre-existing system elements framed as shaded context next to the new functionality.
+   6. creates `workflow-stream/[feature]/implementation/overseer-review.md` pre-populated with the skeleton defined in "Review File Schema" so the overseer has a ready-to-fill template, then advances stage 4 → 5.
+
+8. The millwright then announces stage completion: implementation commits (`base-commit..HEAD`) and diagrams at `workflow-stream/[feature]/implementation/diagrams`. The overseer reviews the generated code and the diagrams (existing-system context is shaded inside each diagram so the new functionality reads as a delta), then edits the skeleton at `workflow-stream/[feature]/implementation/overseer-review.md` — either appending finding entries or leaving the file untouched to signal approval. When done, the overseer types `/mo-continue` a second time.
+
+9. This second `/mo-continue` triggers the overseer-review handler. The handler:
+   1. verifies `overseer-review.md` exists; if missing (overseer deleted it), prompts the overseer to either recreate it or confirm approval, and aborts if neither.
+   2. **canonicalizes any free-form findings** the overseer wrote as plain sentences. The handler runs `review.sh canonicalize` to detect unstructured text under `## Implementation Review`; for each detected span, the millwright classifies severity + scope, generates a one-line summary, calls `review.sh add` to insert the structured `### IR-NNN` block (preserving the original wording in `details:`), then calls `review.sh strip-freeform` to remove the original line range. This keeps the file canonical so `list-open` sees every overseer-authored finding. See `commands/mo-continue.md` Overseer Step 1.5.
+   3. parses the file: if there are no `open` findings under `## Implementation Review`, sets **overseer-review-completed** = true, advances directly to stage 7, and auto-fires `mo-complete-workflow`.
+   4. otherwise, invokes `/mo-review`, which sets **sub-flow** to `reviewing`, advances stage 5 → 6, composes `workflow-stream/[feature]/implementation/review-context.md` (compact snapshot — active scope, goals, implemented surface, open-findings cheat sheet), **asks the overseer to pick a review-mode** (`brainstorming` or `direct`; persisted to `progress.md` as `active.review-mode`), and either launches a brainstorming review session (isolated from mo-workflow — same model as stage 3) with `review-context.md` + `overseer-review.md` as required first reads and `requirements.md` / `config.md` / `summary.md` (active feature section) / `primer.md` as on-demand fallbacks, OR runs the review loop directly in the main session for `direct` mode. After invoking `/mo-review`, the second `/mo-continue` returns control to the overseer; it does NOT advance past stage 6 and does NOT auto-fire `/mo-complete-workflow`.
+
+      Inside the brainstorming review session, the chain controls the loop end-to-end:
+      - reads each open finding (id, severity, scope hint, details);
+      - decides per-finding how to address it — `fix` (direct patch), `re-implement` (cascade into executing-plans), `re-plan` (cascade into writing-plans → executing-plans), or `re-spec` (full re-design through writing-plans + executing-plans); the chain regenerates its own spec/plan internally and writes commits;
+      - marks each finding resolved via `review.sh set-status <id> fixed <note>`;
+      - asks the overseer for approval. The overseer either replies `approve` (chain exits cleanly), or writes new findings into `overseer-review.md` and replies `go again` (chain re-reads and processes the new findings). The session loops until approval.
+
+      Mo-workflow does not encode the cascade dispatch — that's the brainstorming skill's job. There is no iteration cap; the overseer ends the session with `approve`.
+
+      When the brainstorming review session exits, the overseer types `/mo-continue` (the third per-feature touchpoint). The post-review-session resume handler verifies no open findings remain (sanity check — if the chain exited dirty, prompts the overseer to retry `/mo-review` or abort), sets **sub-flow** to `none`, sets **overseer-review-completed** = true, advances stage 6 → 7, **offers the overseer a diagram refresh** (a y/n prompt — if the review session committed new code, regenerating implementation diagrams via `/mo-draw-diagrams` lets the overseer see the final state before stage 8 archives the diagrams into `blueprints/history/v[N]/implementation/diagrams/`), and auto-fires `mo-complete-workflow`.
+10. When the workflow reaches stage 7 — either via the no-findings path (stage-5 `/mo-continue` advances directly because `overseer-review.md` was empty) or via the with-findings path (the stage-6 `/mo-continue` confirms all findings resolved after the review session) — the millwright **auto-invokes** `mo-complete-workflow` (the overseer does not type the command; reaching stage 7 itself is the signal). `mo-complete-workflow` handles:
+    - Millwright updates the todo items IMPLEMENTING to IMPLEMENTED in **todo-list.md** file.
+    - Millwright populates the **commits** field in the info section of the related **requirements.md** file with the commit ids and commit messages of the branch (the canonical link between requirements and implementation; the chain's plan/spec files under `docs/superpowers/` are NOT touched — they're the chain's own artefacts).
+    - Millwright rotates the entire contents of `workflow-stream/[feature]/blueprints/current` (namely `requirements.md`, `config.md`, and `diagrams/`) into `workflow-stream/[feature]/blueprints/history/v[N+1]/` via `blueprints.sh rotate --reason-kind completion`, which also writes a `reason.md` into the new history folder. For example: if the last `v[number]` under `workflow-stream/[feature]/blueprints/history` is `v3`, then all three artifacts plus `reason.md` land in `workflow-stream/[feature]/blueprints/history/v4/` and `workflow-stream/[feature]/blueprints/current/` is left empty.
+    - **archive** the content of `workflow-stream/[feature]/implementation/` into the just-rotated `blueprints/history/v[N+1]/implementation/` (move `overseer-review.md`, `review-context.md`, `change-summary.md`, and `diagrams/` into a sibling `implementation/` subfolder under the new history version). The live `implementation/` folder is left empty; the next feature's stage-2 launcher re-creates children there. This keeps every finding (including any deferred `status: open` ones), the review-context snapshot, the change-summary, and the implementation diagrams as a permanent audit record alongside the rotated blueprint version.
+    - call `progress.sh finish`: append the just-completed feature to `completed`, and set `active` to `null`. (Under the two-step activation model, the next feature is not auto-popped — `mo-apply-impact` will activate it.)
+11. Lastly, the millwright reads `progress.md`'s `queue`. If any features remain, the millwright **announces the next feature and auto-invokes `mo-apply-impact` for it** (soft announce-and-continue — control jumps back to item 4's `mo-apply-impact` step, which calls `progress.sh activate` to pop `queue[0]` into a new `active` block, and items 4–10 re-execute). The overseer can pause the chain by replying with a non-affirmative message or by running `/mo-abort-workflow`. If `queue` is empty (and `active` is null), the millwright checks the active cycle's `todo-list.md` for unmarked `[ ] TODO` items: if any exist, it tells the overseer to mark the items they want next and type `/mo-continue` (the Pre-flight Handler will use `progress.sh enqueue` to repopulate the queue without scrubbing the existing `progress.md` / quest files); if none remain, the cycle is fully drained and `quest.sh end` archives the pointer; the millwright reports completion with a recommendation to run `/mo-run` for a new cycle.
+
+### The Stages:
+
+The `progress.md` file's `active.current-stage` should be advanced when a stage is considered completed.
+
+**At-a-glance** (detailed prose follows the table):
+
+| Stage | Name | Driver | Entry signal | Exit |
+| ---: | --- | --- | --- | --- |
+| 0 | Journal populated | Overseer (manual) | New cycle | Overseer types `/mo-run` |
+| 1 | Quest generated | Millwright via `/mo-run` | `/mo-run <folder...>` | `quest/<active-slug>/{todo-list, summary, progress, queue-rationale}.md` exist; `quest/active.md` updated |
+| 1.5 | Selection + ordering | Pre-flight Handler in `/mo-continue` | Overseer marks `[x]` then `/mo-continue` ×2 | `queue-rationale.md` written; queue reordered; `/mo-apply-impact` auto-fires |
+| 2 | Blueprints generated | Millwright via `/mo-apply-impact` (auto) | Pre-flight Step 2B | `blueprints/current/{requirements.md, config.md, diagrams/}` |
+| 3 | Implementation launched | Millwright via `/mo-plan-implementation` (auto) → chain or direct | Approve Handler at end of stage 2 | `base-commit` + `planning-mode` recorded; chain or direct implementation in progress |
+| 4 | Implementation resumed | Resume Handler in `/mo-continue` | `/mo-continue` after chain/direct returns | `implementation-completed=true`; diagrams rendered; review skeleton created |
+| 5 | Presented for overseer review | Overseer | Stage-4 handoff message | `/mo-continue` after editing `overseer-review.md` |
+| 6 | Overseer review session | `/mo-review` (auto) → chain or direct | Overseer Handler with open findings | Overseer types `approve`, then `/mo-continue` |
+| 7 | Review completed (transitional) | Review-Resume Handler | No-findings path or post-review-session path | Optional diagram refresh; `/mo-complete-workflow` auto-fires |
+| 8 | Completion | Millwright via `/mo-complete-workflow` (auto) | Stage 7 reached | Blueprint rotated to history; `implementation/` cleared; queue advances |
+
+- **Stage 0 — Journal populated**: Covers populating the `journal/` folder with resources (meeting transcripts, notes, etc.). Completed when the overseer signals that intake is done.
+- **Stage 1 — Quest generated**: Covers `mo-run`. Completed when the active cycle's `todo-list.md` and `summary.md` exist (under `quest/<active-slug>/`) and `quest/active.md` points at the new slug.
+- **Stage 2 — Blueprints generated**: Covers `mo-apply-impact`. Completed when `workflow-stream/[feature]/blueprints/current/requirements.md`, `.../config.md`, and `.../diagrams/` all exist.
+- **Stage 3 — Implementation launched**: Covers `mo-plan-implementation` (the launcher). Completed when `progress.md` has `base-commit` recorded, `planning-mode` set (`brainstorming` or `direct`), and either `sub-flow: chain-in-progress` (brainstorming mode) or implementation has begun in the main session (direct mode). After this point the mo-workflow does not touch the session in brainstorming mode (the overseer drives the chain to completion); in direct mode, the millwright is the implementer and the overseer reviews the work inline.
+- **Stage 4 — Implementation resumed**: Covers the `/mo-continue` handler post-implementation (chain-driven or direct). Completed when **implementation-completed** is true, implementation diagrams exist under `workflow-stream/[feature]/implementation/diagrams`, and the empty `overseer-review.md` skeleton has been created. The chain's spec/plan files are not tracked.
+- **Stage 5 — Presented for overseer review**: Covers the millwright announcing stage completion (code + implementation diagrams with existing-vs-new framing) and waiting for the overseer to write findings into `overseer-review.md`. Completed when the overseer types `/mo-continue` and the millwright confirms `overseer-review.md` exists (empty or populated).
+- **Stage 6 — Overseer review session**: Covers the review session launched by `/mo-review`. After the second `/mo-continue` invokes `/mo-review`, the millwright sets `sub-flow=reviewing`, advances 5→6, asks the overseer to pick a `review-mode` (`brainstorming` or `direct`), and hands off accordingly. **In `brainstorming` mode**, the session runs isolated from mo-workflow — same isolation model as stage 3. The chain runs the entire fix-and-approval loop internally — addressing findings, asking the overseer for approval, re-reading `overseer-review.md` if the overseer adds new findings, and exiting on `approve`. **In `direct` mode**, the millwright addresses each finding directly in the main session, committing per fix, marking each `fixed` via `review.sh set-status`, and looping on `go again` reads. Either way: there is no iteration cap. Completed when the session exits AND the overseer types `/mo-continue` (the third per-feature touchpoint), at which point the post-review-session resume handler in `/mo-continue` advances 6 → 7. Skipped entirely when there are no findings — the stage-5 `/mo-continue` advances directly to stage 7.
+- **Stage 7 — Review completed**: Brief transitional stage. Reached either by (a) the no-findings path — stage-5 `/mo-continue` advances directly because there were no open findings — or (b) the with-findings path — the post-review-session resume handler advances after the review session exits and the overseer types `/mo-continue`. Either way, **overseer-review-completed** is true, **sub-flow** is `none`. Before auto-firing `/mo-complete-workflow`, the handler offers the overseer a diagram-refresh prompt (skip when no review-loop commits exist; otherwise re-run `/mo-draw-diagrams` if the overseer answers `y`).
+- **Stage 8 — Completion**: Covers `mo-complete-workflow`. Completed when `blueprints/current` has been rotated (with `reason.md`, `kind: completion`) into `blueprints/history/v[N+1]`, `implementation/` is cleared, `progress.sh finish` has moved the active feature to `completed` and cleared `active`, and the todo items are marked IMPLEMENTED (CANCELED items are left as-is).
+
+### The Workflow Commands
+
+- `mo-run`:
+  - behavior: reads the specified `journal/` sub-folders and produces `quest/<active-slug>/todo-list.md`, `quest/<active-slug>/summary.md`, and the central `progress.md` (with the feature queue populated, `active: null`, `completed: []`) inside a fresh per-cycle subfolder; calls `quest.sh start` to update `quest/active.md`. Refuses (unless `--archive-active` is passed) when a cycle is already active.
+  - inputs:
+    1. one or more journal sub-folder names (from overseer, positional)
+  - post-conditions: quest files + `progress.md` populated. Branch selection is deferred to stage 2 (pre-filled in `config.md`) and validated at stage 3 (`/mo-plan-implementation`).
+
+- `mo-apply-impact`:
+  - invocation: **auto-fired** by the millwright when the overseer confirms the queue order at the end of stage 1.5, or when `mo-complete-workflow` finishes a feature at stage 8 (leaving `active: null`). Manually invokable for recovery.
+  - behavior: calls `progress.sh activate` (pops `queue[0]` into a fresh `active` block), then generates the `workflow-stream/[feature]/blueprints/current/` artifacts (requirements.md, config.md, diagrams/). Fails fast if `active` is already non-null.
+  - inputs:
+    1. feature (popped from `progress.md`'s `queue[0]`)
+    2. `quest/<active-slug>/todo-list.md` PENDING items for that feature
+  - post-conditions: blueprints/current/ populated; `active.current-stage` = 2.
+
+- `mo-plan-implementation` (**launcher — no driver logic**):
+  - invocation: **auto-fired** by `/mo-continue`'s Approve Handler when the overseer types `/mo-continue` at the end of stage 2 (the blueprint review gate). Must not fire without that signal. Manually invokable for recovery.
+  - behavior: (1) updates selected todo items PENDING → IMPLEMENTING in the active cycle's `todo-list.md`; (2) records `git rev-parse HEAD` as `active.base-commit` and sets `active.sub-flow` = `chain-in-progress` in `progress.md`; (3) composes `blueprints/current/primer.md` (compact stage-3 launch primer); (4) **asks the overseer to pick a planning-mode** (`brainstorming` or `direct`) and persists it to `active.planning-mode`; (5a) `brainstorming` mode — invokes the brainstorming skill with the primer paths listed below; (5b) `direct` mode — does NOT invoke a Skill; the millwright reads `primer.md` itself and implements in the main session, committing on the active branch. Either way, the command does not re-enter the workflow until the overseer types `/mo-continue` after implementation finishes.
+  - reads / writes (the launcher's own I/O):
+    1. `progress.md` — reads `active.feature`; writes `base-commit`, `sub-flow`, `branch`, `current-stage`, `planning-mode`
+    2. `quest/<active-slug>/todo-list.md` — writes: PENDING → IMPLEMENTING for the active feature (via `todo.sh bulk-transition`)
+    3. `blueprints/current/config.md` — reads: `## GIT BRANCH` section only, for branch validation
+    4. `blueprints/current/primer.md` — writes: compact stage-3 launch primer (overwritten on retry)
+  - layered primer paths (used in both modes per "Rule 3 — Layered context loading"; passed to the Skill in `brainstorming` mode, read directly by the millwright in `direct` mode):
+    - **Required first read:**
+      1. `blueprints/current/primer.md` — active scope, goals excerpt, journal context, likely-relevant skills/rules
+    - **On-demand canonical files:**
+      2. `blueprints/current/requirements.md` — full goals / planned / non-goals
+      3. `blueprints/current/config.md` — full file (skills, rules, overseer additions)
+      4. `quest/<active-slug>/summary.md` — feature-indexed digest; read `## Cross-cutting constraints` and `## Feature: <active>` first
+      5. `quest/<active-slug>/todo-list.md` — full feature breakdown if PENDING/TODO context is needed
+  - post-conditions: implementation-mode is live (Skill invoked or millwright editing); `active.current-stage` = 3; `active.planning-mode` recorded; `primer.md` written.
+
+- `mo-continue` (**universal advancement signal — multi-purpose**):
+  - behavior: the single touchpoint between the overseer and the mo-workflow at every gate. Reads `progress.md` (and a few sibling files) and dispatches:
+    - **Pre-flight (active=null, queue or selections pending; stage 1.5):** runs the Pre-flight Handler. Sub-state A — `[x] TODO` lines exist: `todo.sh pend-selected` promotes selections, dependencies are analyzed, the prioritized order is proposed in chat. Sub-state B — promotion done but `queue-rationale.md` missing: writes `queue-rationale.md`, runs `progress.sh reorder` (or `progress.sh enqueue` for mid-cycle re-entry per Finding 6), and auto-fires `/mo-apply-impact`.
+    - **At stage 2 (Approve Handler):** sanity-checks blueprint files exist, then auto-fires `/mo-plan-implementation`. The launcher itself prompts for `planning-mode`.
+    - **After stage 3** (implementation has returned, in either mode): runs the post-implementation resume handler — verifies commits exist in `base-commit..HEAD`; runs an **abandoned-chain check** (locates plan files added/modified in `base-commit..HEAD` under `docs/superpowers/plans/` plus any uncommitted plans newer than `base-commit`, counts `- [x]` / `- [ ]` checkboxes, and prompts the overseer with `completed` / `abandoned <N>` options when ≥ 1 candidates exist; on `abandoned`, re-invokes the `brainstorming` Skill with a resume primer pointing at the existing plan + spec + commit log so the chain picks up from the next un-done step, sets `sub-flow` back to `chain-in-progress`, and stops without advancing); on `completed` (or when no plan candidates were found), sets `active.implementation-completed` = true, prompts for execution-mode (`subagent-driven|inline`) when relevant, sets `active.sub-flow` = `resuming`, prompts for a blueprint-drift check (auto-invokes `/mo-update-blueprint <reason>` if the overseer supplies one), invokes `/mo-draw-diagrams`, creates the empty `overseer-review.md` skeleton, and advances to stage 5. Read-only access to `docs/superpowers/plans/` and `docs/superpowers/specs/` is the single exception to the "mo-workflow does not read the chain's artefacts" rule and applies only on the abandoned-chain branch.
+    - **After stage 5** (overseer has written findings): runs the Overseer Handler — first **canonicalizes free-form findings** (runs `review.sh canonicalize`, has the millwright classify severity/scope, calls `review.sh add` per span, then `review.sh strip-freeform` to remove originals); reads `overseer-review.md`; if empty (post-canonicalization), sets `active.overseer-review-completed` = true, advances directly to stage 7, and auto-fires `/mo-complete-workflow`; otherwise auto-fires `/mo-review` (which advances to stage 6 and prompts for `review-mode`) and stops.
+    - **After stage 6 with sub-flow=reviewing** (review session has returned, in either mode): runs the post-review-session resume handler — checks for `open` findings in `overseer-review.md`; if any remain, prompts the overseer with `completed` (proceed with deferred findings, ⚠️ they will not be archived past stage 8), `abandoned` (re-invoke `/mo-review` to re-launch the loop and stop without advancing), or `abort` (run `/mo-abort-workflow`); if none remain (or `completed` was picked), sets `active.sub-flow` = `none`, sets `active.overseer-review-completed` = true, advances to stage 7, **offers a diagram-refresh prompt** (skip when no review-loop commits since the original diagram run; otherwise re-run `/mo-draw-diagrams` if the overseer answers `y`), and auto-fires `/mo-complete-workflow`.
+    - **Any other state**: delegates to `/mo-resume-workflow` for state diagnosis rather than erroring out.
+  - inputs:
+    1. progress.md (`millwright-overseer/quest/<active-slug>/progress.md`, resolved via `quest/active.md`)
+    2. `quest/<active-slug>/todo-list.md` (for pre-flight `[x] TODO` detection)
+    3. `quest/<active-slug>/queue-rationale.md` (for pre-flight sub-state disambiguation)
+    4. overseer-review.md (for canonicalization + open-finding count)
+  - post-conditions: depends on dispatch — pre-flight ends with `/mo-apply-impact` chained; stage-2 dispatch chains `/mo-plan-implementation`; stage-5/6 chain ends with `/mo-complete-workflow`.
+
+- `mo-draw-diagrams` (**user-facing diagram launcher**):
+  - invocation: manually by the overseer, OR auto-fired by `/mo-continue`'s Resume Handler (Step 5) and Review-Resume Handler (Step 2.5 prompt).
+  - behavior: thin wrapper that dispatches on `--target=<name>` (default `implementation`). For `--target=implementation`, runs the body of `mo-generate-implementation-diagrams` unchanged. Other targets are reserved for future use and currently error out with a hint pointing at `/mo-update-blueprint` for requirements-level regeneration.
+  - inputs:
+    1. config.md, codebase, commit range, `change-summary.md` — same as `mo-generate-implementation-diagrams`.
+  - post-conditions: same as `mo-generate-implementation-diagrams`.
+
+- `mo-generate-implementation-diagrams`:
+  - behavior: ensures `implementation/change-summary.md` is current (via `commits.sh change-summary-fresh`; regenerates the cached analysis if stale or missing), then reads the commit range `active.base-commit..HEAD` and renders use-case, sequence, and (if relevant) class diagrams of the **implemented** code via the PlantUML MCP into `workflow-stream/[feature]/implementation/diagrams`. Each diagram frames pre-existing participants/classes/flows as shaded context (grey `box "Existing system"` / `package "Existing"` blocks, `#888888` arrows, `#EEEEEE` activations) alongside the new functionality, so the overseer reads the change inside one diagram instead of diffing two folders. Codebase reads are bounded (diff hunks first; ≤ 3 callers/callees per changed file; skip generated/vendor/lock; record skipped paths under `## Omitted from analysis`).
+  - inputs:
+    1. config.md (`workflow-stream/[feature]/blueprints/current/config.md`)
+    2. codebase (for both the diff and the unchanged-side context that defines "existing", subject to the bounded-context policy)
+    3. commit range `active.base-commit..HEAD` (from `progress.md`)
+    4. `implementation/change-summary.md` — reused if cache-fresh, regenerated otherwise
+  - post-conditions: `implementation/diagrams/` populated; `implementation/change-summary.md` is current for the active range.
+
+- `mo-review` (**review-loop launcher — pure launcher, no driver logic**):
+  - invocation: **auto-fired** by `/mo-continue`'s Overseer Handler when the overseer types `/mo-continue` after writing findings into `overseer-review.md`. Manually invokable by the overseer anytime during stage 5/6 to start the review session early.
+  - behavior: reads open findings from `overseer-review.md`, composes `implementation/review-context.md` (compact stage-6 review primer), **asks the overseer to pick a `review-mode`** (`brainstorming` or `direct`; persisted to `active.review-mode`), and dispatches: `brainstorming` mode invokes the `brainstorming` Skill with the primer paths listed below (the session runs isolated from mo-workflow — same isolation model as stage 3); `direct` mode keeps the review loop in the main session — the millwright reads the same primer, addresses each finding directly, commits per fix, marks each `fixed` via `review.sh set-status`, and loops on `go again` reads. Mo-review does NOT advance past stage 6 in either mode and does NOT auto-fire `/mo-complete-workflow`. The overseer ends the session by typing `approve`, then `/mo-continue` to resume mo-workflow; the post-review-session resume handler in `/mo-continue` finalizes (advances 6 → 7, offers a diagram refresh, auto-fires `/mo-complete-workflow`). Mo-review does **not** generate findings (overseers and the chain are the only authors) and does **not** drive scope-tier dispatch (the chain or millwright decides per-finding).
+  - reads / writes:
+    1. `progress.md` — reads `active.feature`, `active.base-commit`; writes `sub-flow=reviewing`, `review-mode`, advances stage 5 → 6
+    2. `overseer-review.md` — reads via `review.sh list-open` to compose the concern bundle for the primer
+    3. `implementation/review-context.md` — writes: compact stage-6 review primer (overwritten on retry; cleaned up by `mo-complete-workflow` and `mo-abort-workflow`)
+  - layered primer paths (used in both modes per "Rule 3 — Layered context loading"; passed to the Skill in `brainstorming` mode, read directly by the millwright in `direct` mode):
+    - **Required first reads:**
+      1. `implementation/review-context.md` — compact snapshot of active scope, goals, implemented surface, open-findings cheat sheet
+      2. `implementation/overseer-review.md` — canonical findings (re-read on `go again`)
+    - **On-demand canonical files:**
+      3. `blueprints/current/requirements.md` — full goals / planned / non-goals
+      4. `blueprints/current/config.md` — full file (skills, rules, overseer additions)
+      5. `blueprints/current/primer.md` — original stage-3 launch primer
+      6. `quest/<active-slug>/summary.md` — feature-indexed digest; read `## Cross-cutting constraints` and `## Feature: <active>` first
+  - post-conditions: review session is live (Skill in `brainstorming` mode, or main session in `direct` mode). `active.sub-flow=reviewing`, `active.current-stage=6`, `active.review-mode` recorded, `review-context.md` written. The overseer types `/mo-continue` to resume mo-workflow; the post-review-session resume handler in `/mo-continue` advances 6 → 7 and auto-fires `/mo-complete-workflow`.
+
+- `mo-complete-workflow`:
+  - invocation: **auto-fired** by the millwright on stage-7 clean exit (`active.overseer-review-completed=true`). Manually invokable for recovery.
+  - behavior: (1) updates todo items IMPLEMENTING → IMPLEMENTED in the active cycle's `todo-list.md` (CANCELED items are left untouched); (2) populates **commits** field in `requirements.md` info section with commit ids/messages from `active.base-commit..HEAD`; (3) rotates `workflow-stream/[feature]/blueprints/current/` into `workflow-stream/[feature]/blueprints/history/v[N+1]/` via `blueprints.sh rotate --reason-kind completion` (moves every child of `current/` — requirements.md, config.md, diagrams/, primer.md — and writes reason.md); (4) **archives** `workflow-stream/[feature]/implementation/` into the just-rotated `blueprints/history/v[N+1]/implementation/` (moves overseer-review.md, review-context.md, change-summary.md, and diagrams/ into a sibling `implementation/` subfolder under the new history version — every finding, the review-context snapshot, change-summary, and implementation diagrams are preserved as part of the permanent audit record); (5) calls `progress.sh finish` — appends the active feature to `progress.md`'s `completed` and sets `active: null`; (6) if `queue` is non-empty, announces the next feature and auto-invokes `mo-apply-impact` for it (which will call `progress.sh activate` to populate a new `active` block). **If `queue` is empty AND the active cycle's `todo-list.md` still has unmarked `[ ] TODO` items**, the command tells the overseer to mark the next batch and type `/mo-continue` (the Pre-flight Handler will use `progress.sh enqueue` to repopulate the queue and resume from stage 1.5 without scrubbing the existing `progress.md`). If `queue` is empty AND no `[ ] TODO` items remain, the cycle is fully drained: the command calls `quest.sh end` to flip `quest/active.md` to `status=archived` (the per-cycle subfolder remains in place as a permanent archive) and recommends `/mo-run <folders>` for a new cycle. The chain's plan/spec files under `docs/superpowers/` are NOT touched — those are the chain's own artefacts.
+  - inputs:
+    1. config.md (`workflow-stream/[feature]/blueprints/current/config.md`)
+    2. codebase
+    3. commit range `active.base-commit..HEAD` (from `progress.md`)
+    4. requirements.md (`workflow-stream/[feature]/blueprints/current/requirements.md`)
+    5. progress.md (`millwright-overseer/quest/<active-slug>/progress.md`, resolved via `quest/active.md`)
+  - post-conditions: workflow closed; ready for the next feature in the queue (or a new `mo-run` cycle). When the cycle drains, `quest/active.md` is archived and the per-cycle subfolder is preserved.
+
+- `mo-abort-workflow` (**safe cancel**):
+  - behavior: explicitly aborts the currently active workflow so state does not go stale. Preserves approved work (the blueprint) while rolling back in-flight work (implementation artifacts + todo state). Does **not** touch git — branches and commits are the overseer's to manage. The flag `--drop-feature={completed|requeue}` is parsed up front and determines the todo-transition target so progress and todos stay consistent.
+    1. parses `--drop-feature=` (if any) into `drop_mode`. `drop_mode=completed` is refused unless `base-commit..HEAD` has at least one commit (the `completed` list means "this feature actually shipped", so a feature with no commits cannot legally land there).
+    2. transitions todos for `$active_feature` only (scoped via `--feature`): `IMPLEMENTING → IMPLEMENTED` when `drop_mode=completed` (canonical stage-8 transition); otherwise `IMPLEMENTING → PENDING` so the feature can be re-implemented. Other features' todos are not affected.
+    3. **deletes** the contents of `workflow-stream/[feature]/implementation/` (overseer-review.md, review-context.md, change-summary.md, diagrams/). Abort represents abandoned in-flight work, not a shipped feature; the implementation artifacts are scratch by definition. (Contrast stage 8, which archives them into `blueprints/history/v[N]/implementation/` because the feature shipped.)
+    4. updates progress.md based on `drop_mode`: `completed` → `progress.sh finish` (appends to `completed`, clears `active`); `requeue` → `progress.sh requeue` (appends to `queue`, clears `active`); no flag → `progress.sh reset` (clears base-commit, execution-mode, *-completed flags; sets sub-flow=none; keeps `active.feature` and `active.branch`; sets `active.current-stage` = 2 so the overseer can retry).
+    5. preserves `workflow-stream/[feature]/blueprints/current/` (the approved requirements + diagrams) — re-running the workflow does not re-do stages 0–2.
+  - inputs:
+    1. progress.md (`millwright-overseer/quest/<active-slug>/progress.md`, resolved via `quest/active.md`)
+    2. optional flag `--drop-feature={completed|requeue}`
+  - post-conditions: `active.current-stage` = 2 (default); next valid command is `mo-plan-implementation` (to retry stage 3 onward) or `mo-apply-impact` (to regenerate the blueprint from scratch if requirements changed). With `--drop-feature`, `active` is null and the next `mo-apply-impact` activates the next queued feature.
+
+- `mo-resume-workflow` (**safe resume**):
+  - behavior: diagnostic / dispatch command the overseer runs when unsure where a workflow left off. Reads `progress.md`, validates invariants, and prints a one-line summary plus the recommended next command. Does not mutate state by itself.
+    1. if `active` is `null` and `queue` is non-empty: recommends `mo-apply-impact` for `queue[0]`.
+    2. if `active` is set but `active.current-stage` < 3: recommends `mo-plan-implementation`.
+    3. if `active.current-stage` = 3 and `active.sub-flow` = `chain-in-progress`: reminds the overseer that brainstorming is live; recommends continuing the chain in the current session or typing `/mo-continue` if the chain already ended.
+    4. if `active.current-stage` = 4: recommends `/mo-continue` (the resume handler was interrupted; re-running it is idempotent).
+    5. if `active.current-stage` = 5: recommends writing findings to `overseer-review.md` and typing `/mo-continue`.
+    6. if `active.current-stage` ∈ {6, 7}: recommends `/mo-continue`.
+    7. if `active` is `null` and `queue` is empty: checks the active cycle's `todo-list.md` for unmarked `[ ] TODO` items. If any exist, recommends marking the next batch + `/mo-continue` (the Pre-flight Handler picks them up via `progress.sh enqueue`). If none remain, recommends a new `/mo-run`.
+    8. on invariant violations (e.g., `active.sub-flow` = `chain-in-progress` but commits exist in `base-commit..HEAD`): surfaces the mismatch and recommends `/mo-continue` (which will resume) or `mo-abort-workflow` if state looks corrupt.
+  - inputs:
+    1. progress.md (`millwright-overseer/quest/<active-slug>/progress.md`, resolved via `quest/active.md`)
+  - post-conditions: no state changes; a recommendation is printed.
+
+- `mo-update-blueprint` (**manual blueprint refresh — implementation-driven**):
+  - invocation: overseer types `/mo-update-blueprint <reason summary>` when they want to bring `blueprints/current/` back in sync with how the implementation has actually evolved (post-chain drift, mid-review changes, etc.) — without waiting for an auto-trigger.
+  - behavior: (1) fails fast if `active` is null OR `active.base-commit` is null (this command is mid-cycle only — stage 3+); (2) calls `blueprints.sh rotate --reason-kind manual --reason-summary "<overseer's text>"`, moving the previous blueprint into `history/v[N+1]/` and writing `reason.md`; (3) calls `blueprints.sh ensure-current`; (4) ensures `implementation/change-summary.md` is current via `commits.sh change-summary-fresh` (regenerates if stale or missing) and reads from it for implementation-reality context; (5) regenerates `requirements.md` / `config.md` / `diagrams/` / `primer.md` inline (see `commands/mo-update-blueprint.md` Step 4) — Goals + diagrams are re-derived from `change-summary.md` plus targeted diff hunks for the entrypoints it lists, while `## Planned`, `## Non-goals`, and frontmatter `todo-item-ids` / `todo-list-id` are copied verbatim from the previous `requirements.md` in history; (6) calls `blueprints.sh preserve-overseer-sections "$active_feature" "$version"` to splice `## GIT BRANCH` and `## Overseer Additions` from the previous `config.md` into the new one; (7) calls `review.sh sync-refs` to re-point any in-flight `overseer-review.md` / `review-context.md` / `change-summary.md` `requirements-id` frontmatter at the new UUID.
+  - inputs:
+    1. `<reason summary>` (required) — one-line explanation; lands in `reason.md`.
+    2. `progress.md` — active feature + `base-commit` lookups.
+    3. `implementation/change-summary.md` — cached analysis (reused if cache-fresh, regenerated otherwise).
+    4. codebase + targeted `git diff base-commit..HEAD` hunks — source for re-derived Goals + diagrams (bounded by the policy in `mo-generate-implementation-diagrams.md` Step 2a).
+    5. previous `blueprints/history/v[N+1]/requirements.md` and `config.md` — source for sections the implementation alone can't reconstruct (Planned / Non-goals / `todo-item-ids` / GIT BRANCH / Overseer Additions).
+  - **NOT inputs (deliberately):** the active cycle's `todo-list.md` / `summary.md`, and `journal/`, are not consulted. Mid-cycle refreshes are reverse-engineered from the implementation; the journal and quest are intake artifacts that don't drift after stage 1.5.
+  - post-conditions: `blueprints/history/v[N+1]/` has the prior content + `reason.md`; `blueprints/current/` holds fresh artifacts (including a regenerated `primer.md`); `change-summary.md` is current for the active range; overseer-authored sections survive verbatim; `overseer-review.md` / `review-context.md` / `change-summary.md` (if present) re-point at new ids. Does not change `current-stage` or any `*-completed` flags.
+
+- `mo-update-todo-list` (**manual todo edits**):
+  - invocation: overseer types `/mo-update-todo-list <subcommand> <args>` to manage items without waiting for stage-driven writes.
+  - subcommands:
+    1. `add <feature> <state> <assignee> <item-id> <description>` — append a new item under the feature's section (auto-creating the section if absent). `state ∈ {TODO, IMPLEMENTING, CANCELED}` only — `PENDING` and `IMPLEMENTED` are refused.
+    2. `cancel <item-id>` — flips the item to CANCELED. Convenience alias for `set-state <id> CANCELED`.
+    3. `set-state <item-id> <state>` — flips the item to `<state>`. Refuses `PENDING` (only `pend-selected` writes it) and `IMPLEMENTED` (only `mo-complete-workflow` writes it).
+  - behavior: thin dispatcher over `scripts/todo.sh`; validates state transitions against the refused-states list and relays script stderr to the overseer. Never rotates blueprints, never alters `progress.md`.
+  - inputs:
+    1. `quest/<active-slug>/todo-list.md` (the file being edited).
+  - post-conditions: `todo-list.md` updated; no other files touched. If the edit affects active-cycle scope (e.g., a mid-cycle `add ... IMPLEMENTING`), the overseer is reminded to follow up with `/mo-update-blueprint <reason>` if they want `requirements.md` / `config.md` / diagrams to reflect the change.
+
+## Worked example: a single feature, end-to-end
+
+The walkthrough below traces one feature (`auth`) through every stage with one finding addressed in a brainstorming review session. Every line is either an overseer action or a millwright action; nothing is omitted.
+
+```
+[Overseer]   Drops journal/auth-meeting/{transcript.txt, notes.md}.
+[Overseer]   Types: /mo-init                                       # one-time setup
+[Millwright] Installs deps via single y/n; scaffolds journal/, quest/, workflow-stream/.
+
+[Overseer]   Types: /mo-run auth-meeting
+[Millwright] Runs doctor preflight; computes slug 2026-04-27-auth-meeting via quest.sh slug;
+             calls quest.sh start to update quest/active.md; generates
+             quest/2026-04-27-auth-meeting/{todo-list.md, summary.md, progress.md}
+             (active=null, queue=[auth]).
+
+[Overseer]   Edits quest/2026-04-27-auth-meeting/todo-list.md: marks AUTH-001 and AUTH-002
+             with [x] (emin).
+[Overseer]   Types: /mo-continue                                   # stage 1.5 step A
+[Millwright] todo.sh pend-selected; groups PENDING by feature; proposes order: [auth].
+
+[Overseer]   Types: /mo-continue                                   # stage 1.5 step B (accept)
+[Millwright] Writes quest/2026-04-27-auth-meeting/queue-rationale.md; progress.sh reorder;
+             auto-fires /mo-apply-impact.
+
+[Millwright] /mo-apply-impact: progress.sh activate (auth → active block).
+             Generates blueprints/current/requirements.md (Goals/Planned/Non-goals),
+             config.md (auto skills+rules block, ## GIT BRANCH pre-filled with HEAD
+             feat/auth/jwt, ## Overseer Additions placeholder), and use-case +
+             sequence diagrams under diagrams/.
+[Overseer]   Reviews blueprint files; adds custom prompts under ## Overseer Additions.
+
+[Overseer]   Types: /mo-continue                                   # stage 2 approve
+[Millwright] Approve Handler validates blueprint files; auto-fires /mo-plan-implementation.
+[Millwright] /mo-plan-implementation: PENDING → IMPLEMENTING; captures base-commit;
+             validates ## GIT BRANCH (matches HEAD, not main/master); writes primer.md;
+             asks: "planning-mode? brainstorming or direct?"
+[Overseer]   Types: brainstorming
+[Millwright] Persists planning-mode=brainstorming; sets sub-flow=chain-in-progress;
+             invokes brainstorming Skill (isolated session) with primer.md as required first read.
+
+[Overseer + chain]
+             brainstorming → writing-plans → executing-plans → subagent-driven-development
+             → finishing-a-development-branch. Commits land on feat/auth/jwt.
+
+[Overseer]   Types: /mo-continue                                   # stage 3 → 4 → 5
+[Millwright] Resume Handler: verifies commits in base-commit..HEAD; sets
+             implementation-completed=true; asks for blueprint-drift reason.
+[Overseer]   Types: continue                                       # no drift
+[Millwright] Auto-fires /mo-draw-diagrams (renders implementation diagrams with
+             existing-vs-new framing). Initializes overseer-review.md skeleton.
+             Advances to stage 5; prints handoff message.
+
+[Overseer]   Reviews implementation/diagrams/ + the diff; edits overseer-review.md
+             with a free-form sentence:
+                "The JWT signing function in auth/jwt.ts hard-codes HS256;
+                 it should be configurable via config."
+
+[Overseer]   Types: /mo-continue                                   # stage 5
+[Millwright] Overseer Handler: review.sh canonicalize finds the freeform span;
+             classifies severity=major, scope=re-implement; review.sh add creates IR-001
+             with the original sentence preserved as `details`; review.sh strip-freeform
+             removes the source line. review.sh list-open returns ["IR-001"].
+             Auto-fires /mo-review.
+[Millwright] /mo-review writes review-context.md; sets sub-flow=reviewing;
+             advances 5 → 6; asks: "review-mode? brainstorming or direct?"
+[Overseer]   Types: brainstorming
+[Millwright] Invokes brainstorming Skill (isolated review session) with
+             review-context.md + overseer-review.md as required first reads.
+
+[Overseer + chain]
+             Chain reads IR-001, classifies as re-implement, edits auth/jwt.ts to
+             accept a config-driven algorithm, commits. review.sh set-status IR-001
+             fixed. Asks overseer for approval.
+[Overseer]   Types: approve
+
+[Overseer]   Types: /mo-continue                                   # stage 6 → 7 → 8
+[Millwright] Review-Resume Handler: list-open is empty (sanity-check passes);
+             sets sub-flow=none, overseer-review-completed=true; advances 6 → 7;
+             offers diagram refresh.
+[Overseer]   Types: y                                              # diagram refresh
+[Millwright] Re-runs /mo-draw-diagrams; auto-fires /mo-complete-workflow.
+
+[Millwright] /mo-complete-workflow:
+               todo.sh bulk-transition IMPLEMENTING IMPLEMENTED --feature auth;
+               commits.sh populate-requirements auth (writes commits: field);
+               blueprints.sh rotate auth --reason-kind completion
+                 (current/* → history/v1/, with reason.md);
+               archives implementation/{overseer-review.md, review-context.md,
+                                         change-summary.md, diagrams/} into
+                 history/v1/implementation/ (preserved as audit record);
+               progress.sh finish (auth → completed; active = null).
+             Queue is empty; checks todo-list.md for unmarked [ ] TODO. None remain.
+             Cycle drained — calls quest.sh end (status=archived; subfolder
+             quest/2026-04-27-auth-meeting/ is preserved as a permanent archive).
+             Recommends /mo-run for the next cycle.
+```
+
+**Overseer touchpoints in this run:** `/mo-init`, `/mo-run auth-meeting`, edit todo-list, `/mo-continue`, `/mo-continue`, edit `## Overseer Additions`, `/mo-continue`, `brainstorming`, drove the chain, `/mo-continue`, `continue`, edit `overseer-review.md`, `/mo-continue`, `brainstorming`, drove the review session, `approve`, `/mo-continue`, `y`.
+
+**Millwright auto-actions:** `/mo-apply-impact`, `/mo-plan-implementation`, `/mo-draw-diagrams`, `/mo-review`, `/mo-draw-diagrams` (refresh), `/mo-complete-workflow`, plus every `progress.sh` / `todo.sh` / `blueprints.sh` / `review.sh` / `commits.sh` invocation.
+
+## Glossary
+
+Quick reference for terms used throughout this spec.
+
+- **Active block** — the populated `active:` section of `progress.md` while a feature is mid-cycle. Null between features.
+- **Base-commit** — git SHA captured at stage 3 just before chain launch / direct implementation. The lower bound of the implementation diff. Recorded in `progress.md`'s `active.base-commit`.
+- **Blueprint** — the `requirements.md` + `config.md` + `primer.md` + `diagrams/` set under `blueprints/current/` for the active feature. Rotates into `blueprints/history/v[N]/` on each refresh.
+- **Brainstorming chain** — the isolated session running `brainstorming` → `writing-plans` → `executing-plans` (or `subagent-driven-development`) → `finishing-a-development-branch` at stage 3. Mo-workflow does not interfere with it.
+- **Brainstorming review session** — the isolated session running the `brainstorming` Skill at stage 6 to address findings. Same isolation model as the stage-3 chain.
+- **Canonicalize** — convert a free-form finding sentence in `overseer-review.md` into a structured `### IR-NNN` block, via `review.sh canonicalize` + the millwright's classification + `review.sh add` + `review.sh strip-freeform`.
+- **Cycle** — the lifespan of a single per-cycle subfolder under `quest/<slug>/`, from `/mo-run` (which creates the subfolder and points `quest/active.md` at it) to all features in the queue completed and all `[ ] TODO` items addressed (or the cycle aborted). At cycle end, `quest.sh end` flips `quest/active.md` to `status=archived`; the subfolder is preserved permanently as a task archive that PMs can query.
+- **Direct mode** — planning-mode or review-mode that keeps work in the main session instead of invoking a Skill. The millwright reads the primer and implements / addresses findings inline.
+- **Drift check** — the post-chain prompt at stage 4 asking the overseer whether the requirements changed during brainstorming. If a reason is supplied, `/mo-update-blueprint <reason>` is invoked.
+- **Existing-vs-new framing** — visual convention in implementation diagrams that shades pre-existing system elements with `#EEEEEE` boxes / packages and `#888888` arrows so new functionality reads as a delta.
+- **Findings file** — `implementation/overseer-review.md`. Holds `### IR-NNN` finding blocks.
+- **History version (vN)** — a snapshot of `blueprints/current/` rotated into `blueprints/history/vN/` with a sibling `reason.md` recording why.
+- **IR-NNN** — finding identifier in `overseer-review.md`. Zero-padded to three digits, monotonically increasing across the whole review file, never reused.
+- **Layered load** — the primer-first context discipline (Rule 3). Long-running stages read a compact primer first and escalate to canonical files only on demand.
+- **Millwright** — the AI agent role (Claude Code's main session).
+- **Overseer** — the human role.
+- **Planning-mode / review-mode** — the overseer's choice between `brainstorming` (isolated Skill session) and `direct` (main-session work) at stages 3 and 6 respectively.
+- **Primer** — a compact derived snapshot file (`primer.md`, `review-context.md`) that bootstraps a long-running stage. Derived from canonical files; canonical files win on conflict.
+- **Quest** — the cycle-wide working state under `quest/<slug>/`: `todo-list.md`, `summary.md`, `progress.md`, `queue-rationale.md`. Each `/mo-run` creates a fresh per-cycle subfolder; the top-level `quest/active.md` pointer (slug + status) names the active one. Historical subfolders are kept indefinitely as a permanent task archive.
+- **re-spec / re-plan / re-implement / fix** — the four scope tiers for a finding, in descending order of chain impact. Higher tiers supersede lower tiers in the same review pass.
+- **Stage** — one of 0–8 in the canonical workflow. Stage 1.5 is implicit (Pre-flight Handler) but referenced throughout.
+- **Sub-flow** — `none | chain-in-progress | resuming | reviewing` — secondary state dimension on top of `active.current-stage` for tracking isolated-session handoffs.
+- **Workflow stream** — the per-feature folder tree under `workflow-stream/<feature>/` containing `blueprints/` (with `current/` + `history/`) and `implementation/`.

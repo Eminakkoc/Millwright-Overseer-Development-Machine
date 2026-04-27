@@ -1,0 +1,37 @@
+---
+id: {{UUID}}
+todo-list-id: {{TODO_LIST_ID}}
+features: [{{FEATURES}}]
+---
+
+# Queue rationale
+
+Audit trail for the dependency-ordering decision at stage 1.5. Persisted so the rationale survives a session break — without it, the analysis would have to be re-derived from scratch on resume.
+
+<!-- Generated artifact — written by /mo-run Step 6 immediately before
+     `progress.sh reorder`. The `features:` frontmatter is the canonical
+     priority order; it must match the queue order in `progress.md`. -->
+
+## Order
+
+<!-- Numbered list of features in priority order, mirroring `features:` frontmatter:
+     1. <feature-1>
+     2. <feature-2>
+     3. <feature-3>
+     -->
+
+## Dependencies
+
+<!-- One bullet per directed edge `<dependent> → <dependency>`, with a 1–3 line
+     reason. Cite specific modules/files where possible.
+
+     - `<feature-2>` → `<feature-1>`: short reason; e.g. "feature-2 calls
+       getCurrentUser() which feature-1 introduces in src/auth/session.ts".
+
+     If the queue has only one feature OR the features have no inter-dependencies,
+     write a single line: "(none — features are independent)" and skip the bullets. -->
+
+## Notes
+
+<!-- Optional. Any caveats: features the overseer reordered manually, dependencies
+     that look soft and could be re-evaluated, etc. Skip the section when empty. -->

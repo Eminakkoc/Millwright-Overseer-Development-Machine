@@ -1,0 +1,46 @@
+---
+id: {{UUID}}
+todo-list-id: {{TODO_LIST_ID}}
+features: [{{FEATURES}}]
+keywords: [{{KEYWORDS}}]
+description: {{DESCRIPTION}}
+---
+
+# Summary
+
+Structured digest of the resources in `journal/` that informed this workflow. Organized so downstream stages can read only the active feature's section instead of the whole digest.
+
+**Reading guide for downstream stages:** load `## Cross-cutting constraints`, then the `## Feature: <active>` section. `## Out-of-scope` and other features' sections are reference-only — read on demand if a gap is found.
+
+## Cross-cutting constraints
+
+<!-- Constraints that apply to every feature in this cycle (compliance, perf budgets,
+     security boundaries, deploy windows, etc.). Keep terse. Omit the section body
+     entirely if there are none — but keep the heading so downstream stages can find it. -->
+
+## Out-of-scope
+
+<!-- Items explicitly excluded from this cycle's roadmap. Sourced from journal
+     exclusions or overseer statements. Keep the heading even when empty. -->
+
+<!-- Then one section per feature, in the same order as `features:` frontmatter:
+
+## Feature: <feature-name>
+
+Multi-paragraph digest of journal content relevant to this feature: goals, context,
+dependencies, acceptance hints. Reference the contributing source documents inline
+(e.g., "see meeting-transcript.txt §timestamp 12:43"). Keep each feature section
+self-contained so a stage that loads only this section has everything it needs. -->
+
+## Sources
+
+<!-- One bullet per source file from the selected journal folders, with a short
+     line on what it contributed:
+
+     - `<journal-folder>/<file>`: <one-line note on what this file contributed —
+       e.g., "meeting transcript; primary source for payment gateway constraints">
+
+     This serves as a back-reference: downstream stages can surface "see
+     pricing-meeting.txt" in their reasoning, and a future cycle can spot
+     which inputs drove a decision. Required even for small intakes — keep it
+     terse, but never empty. -->

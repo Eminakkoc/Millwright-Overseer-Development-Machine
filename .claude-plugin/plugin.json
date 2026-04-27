@@ -1,0 +1,34 @@
+{
+  "name": "millwright-overseer-development-machine",
+  "version": "0.1.0",
+  "description": "Millwright-Overseer agentic workflow system — delegates coding to an AI 'millwright' while the human acts as 'overseer' who reviews generated specs, plans, implementations, and diagrams at each stage.",
+  "author": {
+    "name": "Emin Akkoc",
+    "email": "emin.akkoc@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agentic-workflow",
+    "ai-coding",
+    "code-review",
+    "spec-driven",
+    "plantuml",
+    "brainstorming"
+  ],
+  "commands": "./commands/",
+  "mcpServers": {
+    "plantuml": {
+      "command": "plantuml-mcp-server",
+      "args": []
+    }
+  },
+  "userConfig": {
+    "data_root": {
+      "type": "string",
+      "title": "Workflow data root",
+      "description": "Folder (relative to the project root) where workflow data lives: journal/, quest/, and workflow-stream/. Defaults to 'millwright-overseer'.",
+      "default": "millwright-overseer",
+      "sensitive": false
+    }
+  }
+}

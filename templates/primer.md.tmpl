@@ -1,0 +1,48 @@
+---
+id: {{UUID}}
+requirements-id: {{REQUIREMENTS_ID}}
+feature: {{FEATURE}}
+---
+
+# Primer — {{FEATURE}}
+
+Compact context bundle for the stage-3 brainstorming chain (and any review-loop re-entries). When this primer covers a topic, the chain does NOT need to re-load the canonical files. When a gap surfaces, drop into the on-demand references at the bottom.
+
+<!-- Generated artifact — overwritten on every mo-plan-implementation launch and every
+     mo-update-blueprint refresh. Treat the canonical files in `blueprints/current/`
+     and `quest/` as the source of truth; this primer is a snapshot. -->
+
+## Active scope
+
+<!-- Fill from progress.md (active.branch, active.base-commit) and todo.sh list IMPLEMENTING --feature <feature>. -->
+
+- branch: <branch>
+- base-commit: <sha>
+- todos in scope:
+  - `<ITEM-ID>`: <one-line description>
+
+## Goals (this cycle)
+
+<!-- 5–20 lines. Excerpt from requirements.md `## Goals (this cycle)` — keep tight;
+     the full file is on demand below. -->
+
+## Journal context (active feature)
+
+<!-- 5–20 lines. Digest from summary.md `## Feature: <feature>`. Include any items
+     from `## Cross-cutting constraints` that materially affect this feature. -->
+
+## Likely-relevant skills & rules
+
+<!-- ≤ 5 entries pulled from config.md auto-block. Format:
+     - `<name>`: <one-line reason this cycle needs it>; path: `.claude/skills/<name>/SKILL.md`
+     Skip skills/rules that are off-topic for the active goals — they are reachable
+     via config.md if the chain decides it needs them. -->
+
+## On-demand canonical files
+
+If this primer is missing context, read these directly:
+
+- `millwright-overseer/workflow-stream/{{FEATURE}}/blueprints/current/requirements.md` — full goals / planned / non-goals + commits
+- `millwright-overseer/workflow-stream/{{FEATURE}}/blueprints/current/config.md` — full skills/rules + `## GIT BRANCH` + `## Overseer Additions`
+- the active cycle's `summary.md` (under `millwright-overseer/quest/<active-slug>/`; the slug is recorded in `millwright-overseer/quest/active.md`) — other features' sections, cross-cutting constraints, out-of-scope
+- the active cycle's `todo-list.md` (same subfolder) — full feature breakdown including PENDING and TODO items

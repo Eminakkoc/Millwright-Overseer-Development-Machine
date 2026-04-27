@@ -1,0 +1,125 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: millwright-overseer-development-machine/progress.schema.yaml
+title: millwright-overseer/quest/<active-slug>/progress.md frontmatter
+description: >
+  Single workflow-wide state file. Tracks the queue, completed features,
+  and the currently active feature's runtime state. Lives inside the
+  active quest cycle's per-cycle subfolder
+  (millwright-overseer/quest/<active-slug>/progress.md; the slug is
+  recorded in the top-level quest/active.md pointer). Co-generated with
+  todo-list.md, summary.md, and queue-rationale.md by mo-run. Replaces
+  the previous flat quest/progress.md layout, the older quest/workflow-queue.md,
+  and per-feature workflow-stream/<feature>/progress.md.
+
+type: object
+additionalProperties: false
+required:
+  - id
+  - todo-list-id
+  - queue
+  - completed
+  - active
+
+properties:
+  id:
+    type: string
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+
+  todo-list-id:
+    type: string
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+
+  queue:
+    type: array
+    items:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9-]*$"
+    description: Features scheduled to run, in priority order. The active feature is NOT in this list.
+
+  completed:
+    type: array
+    items:
+      type: string
+      pattern: "^[a-z0-9][a-z0-9-]*$"
+    description: Features whose workflows have reached stage 8.
+
+  active:
+    description: >
+      Currently running feature and its runtime state. Null between workflows
+      (immediately after stage 1, and after the last feature finishes at stage 8).
+    oneOf:
+      - type: "null"
+      - type: object
+        additionalProperties: false
+        required:
+          - feature
+          - branch
+          - current-stage
+          - sub-flow
+          - execution-mode
+          - planning-mode
+          - review-mode
+          - implementation-completed
+          - overseer-review-completed
+        properties:
+          feature:
+            type: string
+            minLength: 1
+            pattern: "^[a-z0-9][a-z0-9-]*$"
+            description: Kebab-case feature name; mirrors the workflow-stream/<feature>/ folder.
+          branch:
+            oneOf:
+              - type: "null"
+              - type: string
+                minLength: 1
+            description: >
+              Git branch carrying the implementation commits. Null on stage-2 activation;
+              populated at stage 3 when `/mo-plan-implementation` reads
+              `## GIT BRANCH` from config.md.
+          current-stage:
+            type: integer
+            minimum: 2
+            maximum: 8
+            description: >
+              Active-feature stage. Only exists between stage 2 (just activated)
+              and stage 8 (completed, about to be archived). Stages 0 (journal intake)
+              and 1 (mo-run) are workflow-wide and implied by the presence of this file
+              with active=null.
+          sub-flow:
+            type: string
+            enum: [none, chain-in-progress, resuming, reviewing]
+          base-commit:
+            oneOf:
+              - type: "null"
+              - type: string
+                pattern: "^[0-9a-f]{7,40}$"
+            description: >
+              Git SHA captured at stage 3 — defines the implementation diff range
+              (base-commit..HEAD) used by review and diagram generation. The
+              brainstorming chain's spec/plan files are intentionally NOT tracked
+              here; mo-workflow treats those as opaque chain outputs.
+          execution-mode:
+            type: string
+            enum: [subagent-driven, inline, none]
+          planning-mode:
+            type: string
+            enum: [brainstorming, direct, none]
+            description: >
+              Stage-3 launch choice. `brainstorming` invokes the brainstorming
+              Skill in an isolated session; `direct` skips the Skill and has
+              the millwright implement in the main session using primer.md
+              as the required first read. `none` until /mo-plan-implementation
+              records the choice.
+          review-mode:
+            type: string
+            enum: [brainstorming, direct, none]
+            description: >
+              Stage-6 launch choice for the review session. `brainstorming`
+              invokes the brainstorming Skill (isolated session); `direct`
+              has the millwright address findings in the main session using
+              review-context.md + overseer-review.md as required first reads.
+              `none` until /mo-review records the choice.
+          implementation-completed:
+            type: boolean
+          overseer-review-completed:
+            type: boolean
