@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "millwright-overseer-development-machine",
-      "source": ".",
+      "source": "./",
       "description": "Millwright-Overseer agentic workflow system — delegates coding to an AI 'millwright' while the human acts as 'overseer' who reviews generated specs, plans, implementations, and diagrams at each stage.",
       "version": "0.1.0",
       "author": {
