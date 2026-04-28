@@ -57,7 +57,8 @@ requirements_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$requirements
 # frontmatter.sh init overwrites — safe to re-run if /mo-review is invoked again.
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init review-context "$ctx_dest" \
   "REQUIREMENTS_ID=$requirements_id" \
-  "FEATURE=$active_feature"
+  "FEATURE=$active_feature" \
+  "DATA_ROOT=$data_root"
 ```
 
 Then fill the body via `Edit`, following the template's section guide:

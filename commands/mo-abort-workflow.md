@@ -1,64 +1,53 @@
 ---
 description: Safely cancel the active workflow — reverts IMPLEMENTING todos, clears implementation/, resets progress.md. Preserves blueprints/current/ and does NOT touch git.
-argument-hint: "[--drop-feature={completed|requeue}]"
+argument-hint: "[--drop-feature=requeue]"
 ---
 
 # mo-abort-workflow
 
 Use when a workflow needs to be cancelled mid-flight — session crash, mind change, merge conflict, corrupted state.
 
+> **Looking for `--drop-feature=completed`?** Removed. The flag was a partial shortcut — it set `progress.md.completed` but skipped the rest of stage 8 (no `commits:` field on `requirements.md`, no blueprint rotation, no archival of `implementation/` artifacts). The result was inconsistent state that violated the schema's contract that "completed" means stage 8 was reached. If a feature has actually shipped (commits exist in `base-commit..HEAD` and you're satisfied with them), run `/mo-complete-workflow` directly — that's the canonical, single-step finalizer. `/mo-abort-workflow` now only handles the genuinely-abort cases: requeue the feature, or retry it from stage 2.
+
 ## Execution
 
 ### Step 1 — Parse the drop-feature flag and validate
-
-The flag determines what Step 2 does to the todos, so resolve it up front. `--drop-feature=completed` requires real commits in `base-commit..HEAD` (the `completed` list means "this feature actually shipped"); refuse if no commits exist.
 
 ```bash
 active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active)"
 current_stage="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get current-stage)"
 drop_mode=""
 case "${1:-}" in
-  --drop-feature=completed) drop_mode="completed" ;;
   --drop-feature=requeue)   drop_mode="requeue" ;;
   "")                       drop_mode="" ;;
-  *) echo "error: unknown flag '$1' (expected --drop-feature=completed|requeue)" >&2; exit 1 ;;
-esac
+  --drop-feature=completed)
+    cat >&2 <<'EOF'
+error: --drop-feature=completed has been removed.
 
-if [[ "$drop_mode" == "completed" ]]; then
-  base_commit="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get base-commit 2>/dev/null || echo "")"
-  if [[ -z "$base_commit" || "$base_commit" == "null" ]]; then
-    echo "error: --drop-feature=completed needs a stage-3+ feature (base-commit must be set; no commits could have shipped before stage 3)." >&2
-    echo "       Use --drop-feature=requeue to put the feature back on the queue, or omit the flag to retry from stage 2." >&2
+It used to set progress.md.completed but skipped the rest of stage 8 (no
+commits: field, no blueprint rotation, no archival of implementation/
+artifacts). The result was inconsistent state.
+
+If the feature has actually shipped, run /mo-complete-workflow directly
+— that's the canonical finalizer. If you want to throw the feature
+back on the queue or retry it, use --drop-feature=requeue (or no flag).
+EOF
     exit 1
-  fi
-  if (( $(git rev-list --count "$base_commit..HEAD" 2>/dev/null || echo 0) == 0 )); then
-    echo "error: --drop-feature=completed refused — no commits exist in $base_commit..HEAD." >&2
-    echo "       The 'completed' list is for features that actually shipped. Use --drop-feature=requeue instead." >&2
-    exit 1
-  fi
-fi
+    ;;
+  *) echo "error: unknown flag '$1' (expected --drop-feature=requeue or no flag)" >&2; exit 1 ;;
+esac
 ```
 
 ### Step 2 — Confirm with the overseer
-
-Summarize current state and ask for confirmation. The summary depends on `drop_mode`:
 
 ```bash
 echo "Active feature: $active_feature"
 echo "Current stage:  $current_stage"
 echo "This will:"
-case "$drop_mode" in
-  completed)
-    echo "  - mark the active feature's IMPLEMENTING todos as IMPLEMENTED (canonical stage-8 transition)"
-    echo "  - move '$active_feature' to progress.md.completed"
-    ;;
-  requeue|"")
-    echo "  - revert IMPLEMENTING todos for the active feature back to PENDING"
-    [[ "$drop_mode" == "requeue" ]] && echo "  - move '$active_feature' to the end of progress.md.queue"
-    ;;
-esac
+echo "  - revert IMPLEMENTING todos for the active feature back to PENDING"
+[[ "$drop_mode" == "requeue" ]] && echo "  - move '$active_feature' to the end of progress.md.queue"
 echo "  - delete implementation/ (overseer-review.md, review-context.md, change-summary.md, diagrams/)"
-echo "  - reset progress.md to a fresh stage-2 state (when no --drop-feature flag is set)"
+[[ "$drop_mode" == "" ]]        && echo "  - reset progress.md to a fresh stage-2 state (active.feature + active.branch preserved for retry)"
 echo "  - keep blueprints/current/ intact"
 echo "  - keep the active quest cycle's subfolder under quest/<active-slug>/ intact (cycle stays open — abort only resets the active feature)"
 echo "  - NOT touch git (branches and commits remain)"
@@ -66,21 +55,12 @@ read -p "Proceed? (y/n): " ans
 [[ "$ans" == "y" ]] || exit 0
 ```
 
-### Step 3 — Transition todos (active feature only)
+### Step 3 — Revert todos (active feature only)
 
-Scope the transition to the active feature so other queued/in-flight features' todos aren't affected. (`bulk-transition` without `--feature` would touch every IMPLEMENTING line in the file — including any other feature mid-work, which is not what abort means.) The destination state depends on `drop_mode`:
+Scope the revert to the active feature so other queued/in-flight features' todos aren't affected. (`bulk-transition` without `--feature` would touch every IMPLEMENTING line in the file — including any other feature mid-work, which is not what abort means.)
 
 ```bash
-case "$drop_mode" in
-  completed)
-    # Canonical stage-8 transition — feature shipped, todos are IMPLEMENTED.
-    $CLAUDE_PLUGIN_ROOT/scripts/todo.sh bulk-transition IMPLEMENTING IMPLEMENTED --feature "$active_feature"
-    ;;
-  requeue|"")
-    # Feature did NOT ship; revert so it can be re-implemented (or re-tried from stage 2).
-    $CLAUDE_PLUGIN_ROOT/scripts/todo.sh bulk-transition IMPLEMENTING PENDING --feature "$active_feature"
-    ;;
-esac
+$CLAUDE_PLUGIN_ROOT/scripts/todo.sh bulk-transition IMPLEMENTING PENDING --feature "$active_feature"
 ```
 
 ### Step 4 — Clear implementation
@@ -96,14 +76,8 @@ rm -f "$impl_dir"/change-summary.md
 
 ### Step 5 — Update progress.md based on `drop_mode`
 
-`progress.sh finish`/`requeue` both set `active=null`, so they replace the `progress.sh reset` path entirely. `reset` only runs when no `--drop-feature` flag was passed (the overseer wants to retry the same feature from stage 2).
-
 ```bash
 case "$drop_mode" in
-  completed)
-    # Feature shipped — finish appends to completed[] and clears active.
-    $CLAUDE_PLUGIN_ROOT/scripts/progress.sh finish >/dev/null
-    ;;
   requeue)
     # Feature did NOT ship — requeue appends to queue end and clears active.
     $CLAUDE_PLUGIN_ROOT/scripts/progress.sh requeue >/dev/null
@@ -117,8 +91,5 @@ esac
 
 ### Step 6 — Report
 
-The reporting message depends on `drop_mode`:
-
-- **`completed`**: `> "Workflow aborted. '$active_feature' marked completed (commits in $base_commit..HEAD shipped) and moved to progress.md.completed. Next /mo-apply-impact will activate the next queued feature."`
 - **`requeue`**: `> "Workflow aborted. '$active_feature' moved to the end of progress.md.queue. Next /mo-apply-impact will activate whatever is now at queue[0]."`
 - **(no flag)**: `> "Workflow aborted. '$active_feature' is back at stage 2 with blueprints preserved. Run /mo-plan-implementation to retry the chain, or /mo-apply-impact to regenerate the blueprint from scratch. (Auto-fire is suspended until you re-enter — both commands are safe to invoke manually here.)"`

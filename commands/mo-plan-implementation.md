@@ -122,7 +122,8 @@ requirements_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$requirements
 # frontmatter.sh init overwrites — safe to re-run on retry.
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init primer "$primer_dest" \
   "REQUIREMENTS_ID=$requirements_id" \
-  "FEATURE=$active_feature"
+  "FEATURE=$active_feature" \
+  "DATA_ROOT=$data_root"
 ```
 
 Then fill the body via `Edit`. Resolve the values up front so they go into the file as literals (the template body has no token substitution beyond frontmatter):

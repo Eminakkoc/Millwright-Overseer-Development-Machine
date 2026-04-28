@@ -303,6 +303,85 @@ with open(dest_path, 'w') as f:
 PYEOF
 }
 
+# Verify that the current working tree is the one that activated the
+# currently-active feature. Refuses with a clear message otherwise.
+#
+# When the active block is null, or when the fingerprint fields aren't
+# present (cycle activated before the worktree-fingerprint change shipped),
+# the function is a no-op so old in-flight cycles keep working. Once a
+# cycle is re-activated (next /mo-apply-impact), the fingerprint is
+# captured and the guard becomes active.
+#
+# Compares three things, in order of strength:
+#   1. git-common-dir — must match the current worktree's common dir.
+#      Mismatch means we're in a different repository entirely.
+#   2. git-worktree-dir — distinguishes sibling worktrees of the same repo.
+#      Mismatch means the same repo but a different `git worktree add`.
+#   3. worktree-path — the literal $PWD. Falls back to this when the git
+#      dirs are unavailable (rare; would mean the user moved their git dir).
+#
+# Exits non-zero with a guidance message on mismatch.
+mo_assert_worktree_match() {
+  local progress
+  progress="$(mo_progress_file 2>/dev/null || true)"
+  [[ -n "$progress" && -f "$progress" ]] || return 0
+
+  local active
+  active="$(mo_fm_get "$progress" active 2>/dev/null || echo "null")"
+  [[ "$active" == "null" || -z "$active" ]] && return 0
+
+  local recorded_path recorded_common recorded_wtdir
+  recorded_path="$(mo_fm_get "$progress" .active.worktree-path 2>/dev/null || echo "null")"
+  recorded_common="$(mo_fm_get "$progress" .active.git-common-dir 2>/dev/null || echo "null")"
+  recorded_wtdir="$(mo_fm_get "$progress" .active.git-worktree-dir 2>/dev/null || echo "null")"
+
+  # Pre-fingerprint cycle (activated before this change shipped). Skip the
+  # guard so old cycles can finish; new cycles get the fingerprint at activate.
+  if [[ "$recorded_path" == "null" && "$recorded_common" == "null" && "$recorded_wtdir" == "null" ]]; then
+    return 0
+  fi
+
+  local current_common="" current_wtdir=""
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    current_common="$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd)"
+    current_wtdir="$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd)"
+  fi
+
+  local feature
+  feature="$(mo_fm_get "$progress" .active.feature 2>/dev/null || echo "?")"
+
+  # Strongest signal: git worktree dir mismatch. This catches sibling
+  # `git worktree add` checkouts of the same repo.
+  if [[ -n "$current_wtdir" && "$recorded_wtdir" != "null" && "$current_wtdir" != "$recorded_wtdir" ]]; then
+    mo_die "worktree mismatch: active feature '${feature}' was activated from
+       worktree:   ${recorded_path}
+       git-dir:    ${recorded_wtdir}
+  but this command is running in
+       worktree:   ${PWD}
+       git-dir:    ${current_wtdir}
+
+  Two git worktrees appear to share the same data_root. Run mo-workflow
+  commands for this active feature only from the worktree that activated
+  it, or set MO_DATA_ROOT to a per-worktree path before retrying."
+  fi
+
+  # Different repository entirely.
+  if [[ -n "$current_common" && "$recorded_common" != "null" && "$current_common" != "$recorded_common" ]]; then
+    mo_die "repository mismatch: active feature '${feature}' belongs to
+       repo:       ${recorded_common}
+  but this command is running in
+       repo:       ${current_common}
+
+  This data_root is being used by a different repository. Use a separate
+  data_root for this repository (set MO_DATA_ROOT or userConfig.data_root)."
+  fi
+
+  # Path-only fallback when git wasn't usable for the comparison.
+  if [[ -z "$current_wtdir" && "$recorded_path" != "null" && "$PWD" != "$recorded_path" ]]; then
+    mo_die "worktree mismatch: active feature '${feature}' was activated from ${recorded_path}, but this command is running from ${PWD}."
+  fi
+}
+
 # Abort with a message on stderr and non-zero exit.
 mo_die() {
   echo "error: $*" >&2

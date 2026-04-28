@@ -30,6 +30,21 @@
 #   progress.sh get <field>                  # reads active.<field>; errors if active is null
 #   progress.sh set <field>=<value> ...      # writes active.<field>; errors if active is null
 #   progress.sh advance <expected-stage>     # increments active.current-stage if it matches
+#
+#   progress.sh check-worktree               # pre-flight: errors if the current working tree is
+#                                            # not the one that activated the cycle. No-op when
+#                                            # active is null or the fingerprint isn't recorded
+#                                            # (cycles activated before the worktree-fingerprint
+#                                            # change shipped). Mutating commands above call the
+#                                            # same guard internally; this entry-point exists so
+#                                            # command markdowns can fail fast pre-implementation.
+#
+# Worktree fingerprint:
+#   The active block records `worktree-path`, `git-common-dir`, and
+#   `git-worktree-dir` at activation time (stage 2). Every state-mutating
+#   command compares the current working tree to those values and refuses
+#   on mismatch. This protects two `git worktree add` checkouts that
+#   share the same data_root from clobbering each other's active state.
 
 set -euo pipefail
 source "$(dirname "$0")/internal/common.sh"
@@ -81,9 +96,17 @@ PYEOF
   activate)
     dest="$(progress_file)"
     require_file "$dest"
-    python3 - "$dest" <<'PYEOF'
+    # Capture the worktree fingerprint up front so the active block records
+    # which working tree owns the cycle. Subsequent state mutations are gated
+    # on a match via mo_assert_worktree_match (common.sh).
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || mo_die "progress.sh activate must run inside a git working tree (current dir: $PWD)"
+    wt_path="$PWD"
+    git_common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+    git_worktree_dir="$(cd "$(git rev-parse --git-dir)" && pwd)"
+    python3 - "$dest" "$wt_path" "$git_common_dir" "$git_worktree_dir" <<'PYEOF'
 import sys, re, yaml
-path = sys.argv[1]
+path, wt_path, git_common_dir, git_worktree_dir = sys.argv[1:]
 with open(path) as f:
     content = f.read()
 m = re.match(r'^---\n(.*?)\n---\n(.*)$', content, re.DOTALL)
@@ -106,6 +129,9 @@ fm['active'] = {
     'review-mode': 'none',
     'implementation-completed': False,
     'overseer-review-completed': False,
+    'worktree-path': wt_path,
+    'git-common-dir': git_common_dir,
+    'git-worktree-dir': git_worktree_dir,
 }
 with open(path, 'w') as f:
     f.write('---\n')
@@ -121,6 +147,7 @@ PYEOF
     dest="$(progress_file)"
     require_file "$dest"
     require_active "$dest"
+    mo_assert_worktree_match
     python3 - "$dest" <<'PYEOF'
 import sys, re, yaml
 path = sys.argv[1]
@@ -145,6 +172,7 @@ PYEOF
     dest="$(progress_file)"
     require_file "$dest"
     require_active "$dest"
+    mo_assert_worktree_match
     python3 - "$dest" <<'PYEOF'
 import sys, re, yaml
 path = sys.argv[1]
@@ -169,6 +197,7 @@ PYEOF
     dest="$(progress_file)"
     require_file "$dest"
     require_active "$dest"
+    mo_assert_worktree_match
     python3 - "$dest" <<'PYEOF'
 import sys, re, yaml
 path = sys.argv[1]
@@ -188,6 +217,9 @@ fm['active'] = {
     'review-mode': 'none',
     'implementation-completed': False,
     'overseer-review-completed': False,
+    'worktree-path': old.get('worktree-path'),
+    'git-common-dir': old.get('git-common-dir'),
+    'git-worktree-dir': old.get('git-worktree-dir'),
 }
 with open(path, 'w') as f:
     f.write('---\n')
@@ -346,9 +378,17 @@ PYEOF
     dest="$(progress_file)"
     require_file "$dest"
     require_active "$dest"
+    mo_assert_worktree_match
     for kv in "$@"; do
       field="${kv%%=*}"
       value="${kv#*=}"
+      # The worktree fingerprint is captured once at activate; refuse
+      # later overwrites so the guard's anchor can't be erased.
+      case "$field" in
+        worktree-path|git-common-dir|git-worktree-dir)
+          mo_die "progress.sh set: $field is immutable after activate (captured at stage 2)"
+          ;;
+      esac
       python3 - "$dest" "$field" "$value" <<'PYEOF'
 import sys, re, yaml
 path, field, value = sys.argv[1:]
@@ -376,6 +416,7 @@ PYEOF
     dest="$(progress_file)"
     require_file "$dest"
     require_active "$dest"
+    mo_assert_worktree_match
     current="$(mo_fm_get "$dest" '.active.current-stage')"
     if [[ "$current" != "$expected" ]]; then
       mo_die "stage mismatch: active.current-stage=$current, advance expected $expected"
@@ -399,8 +440,15 @@ PYEOF
     mo_info "advanced to stage $next"
     ;;
 
+  check-worktree)
+    # Public pre-flight gate. Fails with a guidance message when the
+    # current working tree is not the one that activated the active
+    # feature. No-op when active is null or fingerprint absent.
+    mo_assert_worktree_match
+    ;;
+
   *)
-    echo "usage: progress.sh {init|activate|finish|requeue|reset|reorder|enqueue|get-active|queue-remaining|get|set|advance} ..." >&2
+    echo "usage: progress.sh {init|activate|finish|requeue|reset|reorder|enqueue|get-active|queue-remaining|get|set|advance|check-worktree} ..." >&2
     exit 2
     ;;
 esac

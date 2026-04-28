@@ -78,15 +78,16 @@ The previous blueprint is now at `history/v[<version>]/` and the implementation 
 
 #### Step 4a — Read context (AI work)
 
-Resolve the data root once so every subsequent path honors `userConfig.data_root` / `MO_DATA_ROOT`:
+Resolve the data root and the path to the just-rotated previous `requirements.md` up front. Both are needed by the change-summary regen path below (which uses `$prev_req` to read the previous `id`) and by Step 4b (which carries `todo-list-id` and `todo-item-ids` forward).
 
 ```bash
 data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+prev_req="$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/requirements.md"
 ```
 
 Read into working memory:
 
-- **Previous `requirements.md`:** `$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/requirements.md` (default `data_root` is `millwright-overseer`). Capture the frontmatter (`id`, `todo-list-id`, `todo-item-ids`) and the bodies of `## Planned (future cycles)` and `## Non-goals (out of scope)` (verbatim — these are preserved as-is).
+- **Previous `requirements.md`:** `$prev_req` (default `data_root` is `millwright-overseer`). Capture the frontmatter (`id`, `todo-list-id`, `todo-item-ids`) and the bodies of `## Planned (future cycles)` and `## Non-goals (out of scope)` (verbatim — these are preserved as-is).
 - **Previous `config.md`:** `$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/config.md`. The `## GIT BRANCH` and `## Overseer Additions` sections are preserved at Step 4d via `blueprints.sh preserve-overseer-sections` — you don't need to copy them by hand.
 - **Implementation reality (cached):**
 
@@ -134,12 +135,19 @@ Read into working memory:
 
 ```bash
 new_req="$data_root/workflow-stream/$active_feature/blueprints/current/requirements.md"
-prev_req="$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/requirements.md"
+# $prev_req is already set in Step 4a.
 
 # Carry these from prev — they identify which todo items initiated the cycle and
 # survive blueprint refreshes (todo state hasn't changed mid-cycle).
 prev_todo_list_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$prev_req" todo-list-id)"
-prev_todo_item_ids_csv="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$prev_req" todo-item-ids)"
+# `frontmatter.sh get todo-item-ids` returns a YAML array literal like
+# `[PAY-001, AUD-002]`. The requirements template has `todo-item-ids:
+# [{{TODO_ITEM_IDS}}]` (already wrapped in flow brackets), so strip the
+# outer `[ ]` from the captured value before substituting — otherwise the
+# template would produce `[[PAY-001, AUD-002]]`, a nested array that the
+# requirements schema rejects (items must be strings, not arrays).
+prev_todo_item_ids_csv="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$prev_req" todo-item-ids \
+  | sed -E 's/^\[//; s/\]$//')"
 
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init requirements "$new_req" \
   "TODO_LIST_ID=$prev_todo_list_id" \
@@ -206,7 +214,8 @@ primer_dest="$data_root/workflow-stream/$active_feature/blueprints/current/prime
 new_req_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$new_req" id)"
 $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init primer "$primer_dest" \
   "REQUIREMENTS_ID=$new_req_id" \
-  "FEATURE=$active_feature"
+  "FEATURE=$active_feature" \
+  "DATA_ROOT=$data_root"
 ```
 
 Then fill the body via `Edit`. Resolve values up front (the body has no token substitution beyond frontmatter):

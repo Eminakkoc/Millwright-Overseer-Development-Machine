@@ -61,6 +61,9 @@ properties:
           - review-mode
           - implementation-completed
           - overseer-review-completed
+          - worktree-path
+          - git-common-dir
+          - git-worktree-dir
         properties:
           feature:
             type: string
@@ -123,3 +126,32 @@ properties:
             type: boolean
           overseer-review-completed:
             type: boolean
+          worktree-path:
+            type: string
+            minLength: 1
+            description: >
+              Absolute filesystem path of the working tree that activated this
+              feature (the value of `pwd` at the time `progress.sh activate`
+              ran). State-mutating commands compare the current `pwd` against
+              this field and refuse if they don't match — the guard prevents
+              two git worktrees pointing at the same data_root from clobbering
+              each other's active block. Captured once at stage 2; never
+              rewritten thereafter.
+          git-common-dir:
+            type: string
+            minLength: 1
+            description: >
+              Absolute path of the shared git directory (`git rev-parse
+              --git-common-dir`) for the activating worktree. Common across
+              every worktree of the same repository. Used together with
+              `git-worktree-dir` to identify the exact worktree that owns the
+              active cycle.
+          git-worktree-dir:
+            type: string
+            minLength: 1
+            description: >
+              Absolute path of the per-worktree git directory (`git rev-parse
+              --git-dir`). For the main worktree this equals
+              `git-common-dir`; for additional `git worktree add` checkouts
+              it lives under `<common-dir>/worktrees/<name>/`. Distinguishes
+              sibling worktrees of the same repository.

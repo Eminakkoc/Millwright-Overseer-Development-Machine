@@ -548,7 +548,7 @@ This table summarizes who interacts with which plugin surface, for which purpose
 
 | Millwright (auto) | `/mo-complete-workflow` | Updates IMPLEMENTING → IMPLEMENTED, populates `commits:` in `requirements.md`, rotates `blueprints/current/` into `history/v[N+1]/`, archives the live `implementation/` into `history/v[N+1]/implementation/` (not deleted — preserves findings, review-context, change-summary, and diagrams as a permanent audit record), calls `progress.sh finish`. Auto-invokes next feature's `/mo-apply-impact` if queue non-empty; else asks for more TODO marks or recommends `/mo-run`. | 8 | Atomic close-out. |
 
-| Overseer | `/mo-abort-workflow [--drop-feature=...]` | Safe cancel: IMPLEMENTING → PENDING revert, clear `implementation/`, reset `active` block, preserve `blueprints/current/`. Never touches git. With `--drop-feature=completed` requires real commits in `base-commit..HEAD` and transitions IMPLEMENTING todos to IMPLEMENTED (canonical stage-8 transition). | recovery | Optional `--drop-feature=completed|requeue`. |
+| Overseer | `/mo-abort-workflow [--drop-feature=requeue]` | Safe cancel: IMPLEMENTING → PENDING revert (scoped to the active feature), clear `implementation/`, reset `active` block, preserve `blueprints/current/`. Never touches git. (`--drop-feature=completed` was removed because it bypassed canonical stage-8; use `/mo-complete-workflow` instead.) | recovery | Optional `--drop-feature=requeue`. |
 
 | Overseer | `/mo-resume-workflow` | Diagnostic dispatcher: reads state, prints recommended next command. No mutations. | recovery | Auto-suggestion target for unknown states inside `/mo-continue`. |
 
@@ -892,13 +892,13 @@ The single touchpoint at every overseer gate. Reads `progress.md` and dispatches
 
   
 
-#### `/mo-abort-workflow [--drop-feature=completed|requeue]`
+#### `/mo-abort-workflow [--drop-feature=requeue]`
 
-- Reverts IMPLEMENTING → PENDING in the active cycle's `todo-list.md`. Deletes `implementation/*` (an aborted cycle has no committed work to archive). `progress.sh reset` (keeps feature + branch, clears base-commit + execution-mode + completion flags, sub-flow=none, current-stage=2). Preserves `blueprints/current/`. Never touches git.
+- Reverts IMPLEMENTING → PENDING in the active cycle's `todo-list.md` (scoped to the active feature; other features' todos are unaffected). Deletes `implementation/*` (an aborted cycle has no committed work to archive). `progress.sh reset` (keeps feature + branch, clears base-commit + execution-mode + completion flags, sub-flow=none, current-stage=2). Preserves `blueprints/current/`. Never touches git.
 
-- `--drop-feature=completed` → archives to `completed`. **Requires** real commits in `base-commit..HEAD` (refuses otherwise — you can't claim a feature was completed without commits) and transitions IMPLEMENTING todos to IMPLEMENTED (the canonical stage-8 transition) instead of leaving them in PENDING.
+- `--drop-feature=requeue` → appends `$active_feature` to end of queue (IMPLEMENTING todos still revert to PENDING).
 
-- `--drop-feature=requeue` → appends to end of queue (IMPLEMENTING todos revert to PENDING).
+- `--drop-feature=completed` was **removed**. It bypassed canonical stage-8 work (no `commits:` populated, no blueprint rotation, no archival of `implementation/` artifacts) and produced state inconsistent with the schema's contract that "completed" means stage 8 was reached. To finalize a feature whose work has shipped, run `/mo-complete-workflow` directly — it's the single canonical finalizer.
 
   
 

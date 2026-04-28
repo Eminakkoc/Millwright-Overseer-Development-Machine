@@ -38,7 +38,7 @@ diagram_commits="$(git log --format=%H -- "millwright-overseer/workflow-stream/$
 new_since_diagrams="$(git rev-list --count "${diagram_commits:-$base_commit}..HEAD" 2>/dev/null || echo 0)"
 ```
 
-But `implementation/diagrams/` is documented as a transient workflow artifact that is deleted at stage 8 and is not the source of truth. If those files are not committed, `git log -- implementation/diagrams/` returns nothing, so the fallback becomes `base_commit`. That makes `new_since_diagrams` count the entire implementation range, not only review-loop commits.
+But `implementation/diagrams/` is a transient workflow artifact that is archived at stage 8 (moved into `blueprints/history/v[N+1]/implementation/diagrams/`) and is not the source of truth while live. If those files are not committed, `git log -- implementation/diagrams/` returns nothing, so the fallback becomes `base_commit`. That makes `new_since_diagrams` count the entire implementation range, not only review-loop commits.
 
 **Impact**
 

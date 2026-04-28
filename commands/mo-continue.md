@@ -465,8 +465,8 @@ Prompt the overseer:
 
 > "The review session committed **N** additional commits since the original implementation diagrams were generated. Regenerate the diagrams to reflect the final state of `base-commit..HEAD`?
 >
->   - `y` — re-run `/mo-draw-diagrams` before finalizing (~30 seconds; useful for a final visual sanity check before the diagrams are deleted at stage 8).
->   - `n` — proceed directly to `/mo-complete-workflow`. The diagrams stay at the post-chain snapshot; they're deleted at stage 8 anyway.
+>   - `y` — re-run `/mo-draw-diagrams` before finalizing (~30 seconds; useful so the final snapshot reflects the review-loop fixes before stage 8 archives the diagrams into `blueprints/history/v[N+1]/implementation/diagrams/`).
+>   - `n` — proceed directly to `/mo-complete-workflow`. The diagrams stay at the post-chain snapshot; they'll be archived as-is (not deleted) at stage 8.
 >
 > (y/n)"
 

@@ -80,7 +80,7 @@ These exist for non-happy-path situations; you don't need them in the normal flo
 | `/mo-ingest <folder>` / `--file <path>` | Convert non-text journal files (PDF, DOCX, PPTX, XLSX, HTML, images) into sibling `.md`. Skip if your journal only ever contains `.md` and `.txt`. |
 | `/mo-doctor` | Detailed dependency check with per-dep prompts. (Auto-invoked by `/mo-run` preflight.) |
 | `/mo-draw-diagrams` | Manually re-render implementation diagrams. (Auto-fired during stage 4; manual is for recovery.) |
-| `/mo-abort-workflow [--drop-feature=...]` | Safe-cancel an in-flight workflow. Preserves the blueprint; never touches git. |
+| `/mo-abort-workflow [--drop-feature=requeue]` | Safe-cancel an in-flight workflow. Preserves the blueprint; never touches git. (Use `/mo-complete-workflow` directly when the feature actually shipped — `--drop-feature=completed` was removed because it bypassed canonical stage-8 work.) |
 | `/mo-resume-workflow` | Diagnostic — reads `progress.md` and recommends the next command. |
 | `/mo-update-blueprint <reason>` | Mid-cycle blueprint refresh from implementation reality. |
 | `/mo-update-todo-list <subcmd>` | Manual edits to `todo-list.md` (add / cancel / set-state). |
