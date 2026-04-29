@@ -372,7 +372,7 @@ workflow-stream/<feature>/
 
 │ │ ├── sequence-<flow>.puml
 
-│ │ └── (optional) class-<domain>.puml
+│ │ └── (optional, at most one) class-<domain>.puml OR component-<subject>.puml
 
 │ └── history/
 
@@ -636,11 +636,11 @@ The millwright computes the new cycle's slug — `YYYY-MM-DD-<journal-folder-slu
 
 Calls `progress.sh activate` (pops `queue[0]` into `active`). Then follows `docs/blueprint-regeneration.md` (the *quest-driven runbook*):
 
-- Step A: read `quest/<active-slug>/summary.md` (active feature section + cross-cutting + out-of-scope) and write `requirements.md` with `## Goals (this cycle)`, `## Planned (future cycles)`, `## Non-goals (out of scope)`. Distinction matters: Planned items WILL ship later — current implementation must leave architectural seams. Non-goals are truly out of scope and can be assumed away.
+- Step A: read `quest/<active-slug>/summary.md` (active feature section + cross-cutting + out-of-scope), then run a **bounded codebase-grounding pass** (≤ 5 files per todo item, scoped to the active feature) to identify (a) the existing seam each PENDING item lands on, (b) the seam classification (`backend | frontend | mixed | infra`), and (c) the **cycle flavor** per item (`greenfield | bugfix | improvement` — detected from todo keywords + whether the seam already contains the targeted functionality; not persisted). Write `requirements.md` with `## Goals (this cycle)`, `## Planned (future cycles)`, `## Non-goals (out of scope)`. Goals items name the seam and sketch a high-level solution shape, with phrasing that follows the cycle flavor (greenfield: "add …"; bugfix: "change X from doing A to doing B"; improvement: "extend X to also …") — not code-level details (function signatures, payload schemas belong to the brainstorming spec at stage 3). Distinction matters: Planned items WILL ship later — current implementation must leave architectural seams. Non-goals are truly out of scope and can be assumed away.
 
 - Step B: scan `.claude/skills/` and `.claude/rules/`, write `config.md`'s auto-block (≤ 10 entries / ≤ 2 lines each, three sections: `## Skills`, `## Rules`, `## Load on demand`), pre-fill `## GIT BRANCH` from HEAD if non-trunk, preserve `## Overseer Additions` verbatim.
 
-- Step C: render diagrams via PlantUML MCP — mandatory `use-case-<feature>.puml`, conditional `sequence-<flow>.puml` × N, conditional `class-<domain>.puml`. Plus `diagrams/README.md` with `requirements-id` back-reference.
+- Step C: render diagrams via PlantUML MCP — mandatory `use-case-<feature>.puml`, 2–3 `sequence-<flow>.puml`, and at most one optional structural diagram (`class-<domain>.puml` OR `component-<subject>.puml`, never both — fires only on `backend`/`mixed` seams when 3+ items with non-trivial relationships/dependencies are present; linear chains and pure UI/infra seams skip the slot). Apply the **existing-vs-new framing convention** (shared with stage-4 implementation diagrams): stage-2 baseline is current HEAD as `existing` and the seams sketched by Goals as `new`. Plus `diagrams/README.md` with `requirements-id` back-reference.
 
   
 
@@ -674,7 +674,7 @@ Pure launcher with no driver logic:
 
 4. Optional drift check: prompt overseer for blueprint-drift reason. If supplied, invoke `/mo-update-blueprint <reason>` (which rotates blueprint and regenerates from implementation reality).
 
-5. Auto-fire `/mo-draw-diagrams` (= `mo-generate-implementation-diagrams`). Renders use-case + sequence + (optional) class diagrams of `base-commit..HEAD` with `box "Existing system" #EEEEEE` framing for pre-existing elements, `#888888` arrows, `#EEEEEE` activations, and a `legend right` block documenting the convention.
+5. Auto-fire `/mo-draw-diagrams` (= `mo-generate-implementation-diagrams`). Renders use-case + sequence + (optional) class-OR-component diagrams of `base-commit..HEAD` with the blue/green existing-vs-new convention: blue `#D6EAF8` boxes + `#3498DB` arrows for pre-existing elements, green `#D4EDDA` boxes + `#27AE60` arrows for new functionality, plus a `legend right` block whose wording reflects the cycle flavor.
 
 6. Initialize `overseer-review.md` skeleton via `review.sh init`.
 
@@ -838,7 +838,7 @@ All commands live under `commands/` as Markdown files with YAML frontmatter (`de
 
 #### `/mo-generate-implementation-diagrams` (internal)
 
-- **Behavior**: ensures `implementation/change-summary.md` is current via `commits.sh change-summary-fresh` (cache-keyed by `(base-commit, head)`; exit 0 = fresh, 1 = stale, 2 = missing). Reads commit range `active.base-commit..HEAD`. Renders use-case + sequence + (if relevant) class diagrams via PlantUML MCP into `implementation/diagrams/` with the existing-vs-new framing (shaded `box "Existing system" #EEEEEE` for pre-existing participants, `#888888` arrows, `#EEEEEE` activations, `legend right` block). Codebase reads are bounded (diff hunks first; ≤ 3 callers/callees per changed file; skip generated/vendor/lock; record skipped paths under `## Omitted from analysis` in `change-summary.md`).
+- **Behavior**: ensures `implementation/change-summary.md` is current via `commits.sh change-summary-fresh` (cache-keyed by `(base-commit, head)`; exit 0 = fresh, 1 = stale, 2 = missing). Reads commit range `active.base-commit..HEAD`. Renders use-case + sequence + (if relevant) one optional class-OR-component diagram via PlantUML MCP into `implementation/diagrams/` with the blue/green existing-vs-new convention (blue `#D6EAF8` boxes + `#3498DB` arrows for pre-existing; green `#D4EDDA` boxes + `#27AE60` arrows for new; flavor-aware `legend right` block). Codebase reads are bounded (diff hunks first; ≤ 3 callers/callees per changed file; skip generated/vendor/lock; record skipped paths under `## Omitted from analysis` in `change-summary.md`).
 
   
 
@@ -1108,15 +1108,15 @@ todo-list.md.tmpl
 
 Diagram conventions (enforced by the millwright, not by tooling):
 
-- File naming: `<type>-<subject>.puml` where `<type> ∈ {use-case, sequence, class}`. One diagram per file. Lowercase kebab-case.
+- File naming: `<type>-<subject>.puml` where `<type> ∈ {use-case, sequence, class, component}`. One diagram per file. Lowercase kebab-case.
 
 - Mandatory: exactly one `use-case-<feature>.puml` per feature.
 
-- Conditional: 1–5 `sequence-<flow>.puml` per significant end-to-end flow. >5 is a signal to decompose the feature; the millwright surfaces this to the overseer.
+- Conditional: 2–3 `sequence-<flow>.puml` per feature. 1 is acceptable only when the feature has a single significant flow; >3 is a signal to decompose the feature, and the millwright surfaces this to the overseer rather than rendering a fourth.
 
-- Conditional: one `class-<domain>.puml` only if 3+ new domain classes with non-trivial relationships are introduced.
+- Optional, at most one: either `class-<domain>.puml` OR `component-<subject>.puml`, never both. Fires only on `backend`/`mixed` seams (per the codebase-grounding pass classification at stage 2) AND when the content threshold is met (3+ classes with non-trivial relationships → class; 3+ components with non-trivial dependencies → component; linear chains and pure UI/infra seams skip the slot).
 
-- Implementation diagrams use the **existing-vs-new framing**: `box "Existing system" #EEEEEE { … } end box` for pre-existing participants/classes, `#888888` arrows, `#EEEEEE` activations, fresh skin for new elements, plus a `legend right … endlegend` block documenting the convention.
+- Both stage-2 blueprint diagrams and stage-4 implementation diagrams use the **blue/green existing-vs-new convention**: blue `#D6EAF8` boxes/packages + `#3498DB` arrows + `#D6EAF8` activations for pre-existing participants/classes/components; green `#D4EDDA` boxes/packages + `#27AE60` arrows + `#D4EDDA` activations for new / to-be-implemented elements; plus a `legend right … endlegend` block whose right-column wording reflects the cycle flavor (greenfield / bugfix / improvement).
 
 - A sibling `diagrams/README.md` carries the `requirements-id` back-reference (since `.puml` files have no YAML frontmatter).
 
@@ -1538,7 +1538,7 @@ What the millwright did automatically: `mo-apply-impact`, `mo-plan-implementatio
 
 - **Drift check** — the post-chain prompt asking the overseer whether requirements changed during brainstorming.
 
-- **Existing-vs-new framing** — visual convention in implementation diagrams that shades pre-existing system elements as `#EEEEEE` boxes / packages so the new functionality reads as a delta.
+- **Existing-vs-new framing** — two-colour convention in stage-2 blueprint and stage-4 implementation diagrams: blue (`#D6EAF8` fill, `#3498DB` strokes) for pre-existing system elements, green (`#D4EDDA` fill, `#27AE60` strokes) for new / to-be-implemented elements. Legend wording adapts to cycle flavor (greenfield / bugfix / improvement).
 
 - **Findings file** — `implementation/overseer-review.md`. Contains `### IR-NNN` blocks.
 

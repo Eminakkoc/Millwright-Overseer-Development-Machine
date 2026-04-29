@@ -157,7 +157,7 @@ $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init requirements "$new_req" \
 
 Then write the body using `Edit`. Three sections, in this order:
 
-1. **`## Goals (this cycle)`** — **re-derive from the implementation.** Each goal item references the IMPLEMENTING todo IDs from the preserved `todo-item-ids` and describes what the code actually does. Use the diff + unchanged-side context to write accurate acceptance criteria, including any drift from the original spec (new fields, new endpoints, refactored boundaries — whatever the chain decided to do).
+1. **`## Goals (this cycle)`** — **re-derive from the implementation.** Each goal item references the IMPLEMENTING todo IDs from the preserved `todo-item-ids` and describes what the code actually does. Use the diff + unchanged-side context to write accurate acceptance criteria, including any drift from the original spec (new fields, new endpoints, refactored boundaries — whatever the chain decided to do). **Same altitude rule as stage-2 (`docs/blueprint-regeneration.md` Step A):** name the seam the implementation landed on (the actual folder / module / layer that received the new code) and the integration shape, but do not paste in code-level specifics — function signatures, payload schemas, and table columns belong in `change-summary.md`, not in `requirements.md`. Goals are a high-level description of *what was built and where it lives*, mirroring the stage-2 sketch with the implementation reality substituted in.
 
 2. **`## Planned (future cycles)`** — **copy verbatim** from the previous `requirements.md`. The implementation has no signal about future work; the overseer's planned roadmap survives unchanged. Skip the section entirely if the previous file didn't have one (no planned items).
 
@@ -198,12 +198,12 @@ This reads `## GIT BRANCH` and `## Overseer Additions` bodies from `history/v[<v
 Generate diagrams into `$data_root/workflow-stream/$active_feature/blueprints/current/diagrams/` (default `data_root` is `millwright-overseer`) per `docs/workflow-spec.md` § "Diagram conventions":
 
 - **Mandatory**: one `use-case-<feature>.puml`.
-- **Conditional**: one `sequence-<flow>.puml` per significant end-to-end flow described in the new `requirements.md`. Aim for 1–5.
-- **Conditional**: one `class-<domain>.puml` only if the implementation introduces 3+ new classes/modules with non-trivial relationships.
+- **Conditional**: 2–3 `sequence-<flow>.puml`, one per significant end-to-end flow in the regenerated `requirements.md`. Render 1 only if the implementation genuinely has a single flow; never more than 3.
+- **Optional, at most one**: either `class-<domain>.puml` OR `component-<subject>.puml`, never both. Use the seam classification carried forward from the previous `requirements.md` Goals items. The slot fires only when the seam is `backend` or `mixed` AND the content threshold is met (3+ classes with non-trivial relationships → class; 3+ components with non-trivial dependencies → component; linear chains don't qualify either way; pure UI / infra seams skip the slot). Apply the one-sentence test before rendering.
 
 Use the `plantuml` MCP to render each diagram; save the `.puml` source. Also write a `diagrams/README.md` with the new `requirements-id` back-reference.
 
-These are **requirements-level** diagrams (capability, intent, structure). They differ from `implementation/diagrams/` — those carry the existing-vs-new framing convention to highlight the diff. Requirements-level diagrams describe the feature as if it were being designed fresh from the new Goals.
+**Apply the existing-vs-new framing convention** (see `docs/workflow-spec.md` § "Diagram conventions" and the canonical PlantUML snippets in `commands/mo-generate-implementation-diagrams.md` § "Existing-vs-new convention"). Mid-cycle blueprint regeneration is implementation-driven, so the baseline matches the stage-4 implementation diagrams: `existing` = the codebase at `active.base-commit`; `new` = `base-commit..HEAD`. The requirements-level diagrams under `blueprints/current/diagrams/` and the implementation-level diagrams under `implementation/diagrams/` should look very similar after this command runs — that's intentional, since both are now describing the same implemented reality through the same visual convention. They diverge again only when subsequent brainstorming/review work shifts requirements before the next rotation.
 
 #### Step 4f — Regenerate `primer.md`
 

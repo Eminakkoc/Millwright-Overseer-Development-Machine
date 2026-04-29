@@ -48,9 +48,51 @@ $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init requirements "$dest" \
 
 The schema requires `todo-item-ids` to be a non-empty array of strings. Each item-id (e.g. `PAY-001`, `AUD-002`) is alphanumeric, so the comma-separated list lands cleanly inside the template's `[{{TODO_ITEM_IDS}}]` brackets.
 
+### Codebase-grounding pass (run before writing the body)
+
+Before writing the requirements body, do a **bounded codebase pass** scoped to the active feature's PENDING todo items. The goal is to anchor each requirement item to the **existing seam** where the change lands (a service folder, a module, a layer, a hook point), so Goals describe a high-level solution sketch rather than a pure restatement of intent. This pass also gives Step C the inputs it needs to render existing-vs-new diagrams.
+
+For each item id in `$active_item_ids`:
+
+1. Read the item's description in `quest/<active-slug>/todo-list.md` and the relevant excerpt of `summary.md`'s `## Feature: <$active_feature>` section.
+2. Identify the smallest set of existing files / folders / symbols the item naturally touches. Heuristics: keyword grep, neighboring features in the same feature folder, sibling files in the obvious module (e.g., for "add to cart" → `services/`, `routes/`, the existing cart entity if any).
+3. Note the seam name (`services/`, `events/`, `domain/cart/`, etc.) and any pre-existing component the new functionality must integrate with (e.g., a base service class, an existing repository, an event bus).
+4. **Classify the seam** as one of `backend | frontend | mixed | infra`. Step C reads this classification to decide whether to render the optional structural diagram (class or component). Use this allowlist of folder patterns — if multiple buckets match across the items in this cycle, the feature classification is `mixed`:
+   - `backend`: `services/`, `controllers/`, `routes/`, `domain/`, `models/`, `repositories/`, `events/`, `workers/`, `jobs/`, `handlers/`, `api/`.
+   - `frontend`: `components/`, `pages/`, `views/`, `screens/`, `hooks/`, `containers/`.
+   - `infra`: `migrations/`, `terraform/`, `k8s/`, `ci/`, `scripts/`.
+
+   Projects with non-standard layouts: pick the closest match by intent (a folder of HTTP request handlers is `backend` even if it's named `endpoints/`). When the closest match is genuinely ambiguous, prefer `mixed` over guessing.
+
+5. **Classify the cycle flavor** as one of `greenfield | bugfix | improvement`. The flavor is detected per Goals item (a single cycle can have a mix); it does **not** persist anywhere — it's a framing decision the millwright uses to phrase the Goals body and to pick the legend wording in Step C. No frontmatter field, no schema change.
+
+   Detection rules (apply in order; first match wins):
+
+   - **Bugfix** if the todo description contains an explicit defect signal: keywords like "fix", "bug", "broken", "regression", "crash", "incorrect", "resolve issue", or links to a defect ticket; AND the seam already contains the targeted functionality (the buggy code is what's being fixed).
+   - **Improvement** if the seam already contains a working version of the feature the todo names AND the todo description signals enhancement: keywords like "improve", "extend", "optimize", "enhance", "expand", "upgrade", "speed up", "make … faster / more accurate / more reliable".
+   - **Greenfield** otherwise — the seam either is empty for this todo or doesn't yet contain the targeted functionality. This is the default; ambiguous items fall here. The overseer corrects at the stage-2 review gate if the millwright guessed wrong.
+
+   When a single Goals item legitimately spans flavors ("fix the empty-cart bug AND extend the add-to-cart path to accept bulk requests"), prefer to split it into two Goals lines so each carries one flavor. If splitting isn't natural, take the dominant flavor and let the prose carry the rest.
+
+**Bounding rules** (this is a stage-2 pass, not a full read of the project):
+
+- Diff hunks aren't available yet — let the todo description and feature folder structure drive your reads.
+- ≤ 5 files per todo item; skip generated/vendor/lock/build artefacts. If you needed to read more than that to identify the seam, the todo item is probably too vague — surface it to the overseer rather than guessing.
+- The pass writes nothing on its own — the findings feed Goals (below) and the diagrams in Step C.
+
+**Greenfield case.** If the project is empty or has no relevant existing seams (first-cycle bootstrap), each Goals item collapses to pure intent — that's correct, there's nothing to anchor to. Do not fabricate seams that don't exist yet; the chain at stage 3 will introduce them.
+
 Then write the requirements body with **three clearly-labeled scope sections**:
 
-1. **`## Goals (this cycle)`** — describe what the active items (`$active_item_ids`) deliver: goals, constraints, acceptance criteria. This is the primary deliverable.
+1. **`## Goals (this cycle)`** — describe what the active items (`$active_item_ids`) deliver: goals, constraints, acceptance criteria. Each Goals item should **name the existing seam** identified by the codebase-grounding pass above and sketch the high-level solution shape. The phrasing follows the cycle flavor classified in step 5 of the grounding pass:
+
+   - **Greenfield** — phrase as additive: "add a new service under `services/` to handle add-to-cart, plugging into the same request/response contract as the other REST services in that folder."
+   - **Bugfix** — phrase as a behaviour change against the existing seam: "change the existing `services/CartService.addItem` path so quantity 0 no longer creates an empty cart row; the corrected behaviour rejects the request with 400 and leaves the cart untouched." Include reproduction conditions and the corrected behaviour inline so the acceptance criteria are explicit.
+   - **Improvement** — phrase as an extension or upgrade of the existing capability: "extend the existing `services/CartService.addItem` to also accept bulk-add requests; keep the single-item path unchanged." Be specific about what changes versus what's preserved — the chain at stage 3 needs to know which existing behaviour is load-bearing.
+
+   This is the primary deliverable.
+
+   **Altitude rule (applies to all three flavors).** Name the seam, sketch the integration, describe behaviour at the input/output level; do **not** prescribe code-level details. "Add a service in `services/`" / "change `CartService.addItem` to reject quantity 0" / "extend `CartService.addItem` to accept bulk arrays" are the right altitude. "Add `CartService.addItem(itemId, quantity)` returning `{ ok, cartId }`" is too low — that belongs in the brainstorming spec at stage 3. The seam-naming is a hint, not a contract; the chain may pick a different approach during brainstorming, in which case the stage-4 drift check + `/mo-update-blueprint` flow rotates the blueprint to match.
 
 2. **`## Planned (future cycles)`** — list each unselected TODO item (`$planned_ids`) from the same feature with a short line that names the item id, what it delivers, and **what architectural seam the current implementation needs to leave open for it**. Example:
 
@@ -114,10 +156,30 @@ If HEAD is `main`/`master`/detached, leave the section unfilled — `/mo-plan-im
 
 ## Step C — Generate requirement-level diagrams (AI work)
 
-Generate diagrams into `millwright-overseer/workflow-stream/$active_feature/blueprints/current/diagrams/`. Follow the rules in `docs/workflow-spec.md` § "Diagram conventions":
+Generate diagrams into `millwright-overseer/workflow-stream/$active_feature/blueprints/current/diagrams/`. Follow the caps in `docs/workflow-spec.md` § "Diagram conventions":
 
 - **Mandatory**: one `use-case-<feature>.puml` use-case diagram.
-- **Conditional**: one `sequence-<flow>.puml` per distinct end-to-end flow from `requirements.md`. Aim for 1–5.
-- **Conditional**: one `class-<domain>.puml` only if the feature introduces 3+ new domain classes with non-trivial relationships.
+- **Conditional**: 2–3 `sequence-<flow>.puml` per feature — one per significant end-to-end flow from the Goals items. Render 1 only when the feature genuinely has a single significant flow; **never render more than 3** (if more than 3 candidates exist, pick the most diff-worthy and describe the rest in the Goals prose; if you find yourself wanting 4+, surface a decomposition request to the overseer).
+- **Optional, at most one**: either a `class-<domain>.puml` OR a `component-<subject>.puml`, never both. The slot fires only when the feature seam (from Step A's classification) is `backend` or `mixed` AND the content threshold is met:
+  - **Class** when the feature introduces 3+ new domain classes/modules with non-trivial relationships (inheritance, composition with shared lifecycle, bidirectional association, or branching dependency graph).
+  - **Component** when the feature introduces 3+ new components/modules with non-trivial dependencies (fan-out, fan-in, cross-bucket dependency, or multiple inbound callers) but isn't class-heavy enough for a class diagram.
+  - **Linear chains do not qualify.** A `controller → service → repo` topology is not "non-trivial" regardless of how many modules it touches; skip the optional slot.
+  - **One-sentence test.** Before rendering, write a one-sentence purpose for the diagram beyond the filename. If you can't articulate the value, skip.
+  - **Skip for `frontend` or `infra` seams.** UI topology lives in the component tree; infra topology lives in manifests. Don't render structural diagrams for those.
+
+**Existing-vs-new framing applies at stage 2 too.** The convention is the same one `mo-generate-implementation-diagrams` uses (canonical PlantUML snippets in `commands/mo-generate-implementation-diagrams.md` § "Existing-vs-new convention"), but the **baseline differs by stage**:
+
+- Stage-2 baseline (this runbook): `existing` = the current HEAD codebase (what's there before this cycle); `new` = the additions sketched by the Goals items, derived from the codebase-grounding pass above.
+- Stage-4 baseline (`mo-generate-implementation-diagrams`): `existing` = the codebase at `active.base-commit`; `new` = `base-commit..HEAD`.
+
+Apply the same blue/green visual rules at both stages: pre-existing participants/classes/components inside `box "Existing system" #D6EAF8 … end box` (sequence) or a tinted `package "Existing" #D6EAF8 { … }` (class / use-case / component); pre-existing arrows `A -[#3498DB]-> B` with `#D6EAF8` activations; new elements inside `box "New" #D4EDDA … end box` or `package "New" #D4EDDA { … }`, with green arrows `C -[#27AE60]-> D` and `#D4EDDA` activations. Each diagram carries the same legend block. Sharing the convention across stages lets the overseer diff the stage-2 and stage-4 diagrams with one visual vocabulary — the green set in the stage-2 diagram is what was planned, the green set in the matching stage-4 diagram is what was actually built; matching subjects (same `<type>-<subject>.puml` filename) make the comparison direct.
+
+**Legend wording shifts with cycle flavor (Step A's classification).** The colours stay the same; only the right-hand column of the legend is rephrased so the reader knows what the diff is about:
+
+- `greenfield` Goals item: legend reads "pre-existing context" / "to be implemented".
+- `bugfix` Goals item: legend reads "current (wrong) behavior" / "corrected behavior".
+- `improvement` Goals item: legend reads "current capability" / "improved capability".
+
+If the codebase-grounding pass found no existing seams for a given diagram (greenfield bootstrap with empty seam), the blue `Existing` block is empty or omitted — render only the green elements and note "no pre-existing context" in the legend.
 
 Use the `plantuml` MCP to render each diagram; save the `.puml` source alongside any generated artifact. Also write a `diagrams/README.md` with the `requirements-id` back-reference and a listing of all diagrams.

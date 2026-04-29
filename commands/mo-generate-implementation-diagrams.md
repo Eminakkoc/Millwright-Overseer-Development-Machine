@@ -88,25 +88,33 @@ Now build each diagram subject from `change-summary.md` + targeted re-reads:
 Follow `docs/workflow-spec.md` § "Diagram conventions":
 
 - **`use-case-<feature>.puml`** — mandatory, exactly one. Implemented capabilities with framed actors that pre-existed.
-- **`sequence-<flow>.puml`** — one per significant implemented flow. Aim for 1–5 total.
-- **`class-<domain>.puml`** — only if the implementation introduced 3+ new classes/modules with non-trivial relationships.
+- **`sequence-<flow>.puml`** — 2–3 per feature, one per significant implemented flow. Render 1 only when the implementation genuinely has a single significant flow; **never render more than 3** (if more than 3 candidates exist, pick the most diff-worthy; surface a decomposition signal to the overseer if the count keeps creeping up).
+- **One optional structural diagram — `class-<domain>.puml` OR `component-<subject>.puml`, never both.** Read the seam classification from the feature's `blueprints/current/requirements.md` Goals items (carried forward from Step A's codebase-grounding pass). The optional slot fires only when the seam is `backend` or `mixed` AND the implementation meets the content threshold:
+  - **Class** when the implementation introduced 3+ new domain classes/modules with non-trivial relationships (inheritance, composition with shared lifecycle, bidirectional association, or branching dependency graph).
+  - **Component** when the implementation introduced 3+ new components/modules with non-trivial dependencies (fan-out, fan-in, cross-bucket dependency, or multiple inbound callers) but isn't class-heavy enough for a class diagram.
+  - **Linear chains do not qualify** (e.g., `controller → service → repo`). Skip the slot.
+  - **One-sentence test.** If you can't articulate the diagram's purpose in one sentence beyond its filename, skip.
+  - **Skip for `frontend` / `infra` seams.**
+
+  Pick whichever fits the *implemented* topology best — even if stage-2 picked the other type, the implementation reality wins here. The overseer can compare the matched filenames across both diagram folders; if stage 2 rendered a `class-payment-domain.puml` and stage 4 rendered `component-payment-pipeline.puml`, that mismatch is itself signal that the chain restructured the work, and shows up in the post-chain drift check.
 
 #### Existing-vs-new convention (consistent across all diagrams)
 
-Use this fixed visual convention so the overseer can read every diagram the same way:
+Use this fixed visual convention so the overseer can read every diagram the same way. The convention uses two colours: **blue for existing**, **green for new (to-be / implemented)**.
 
-- Pre-existing participants/classes are grouped in a `box "Existing system" #EEEEEE … end box` (sequence) or a tinted `package "Existing" #EEEEEE { … }` block (class / use-case).
-- New participants/classes sit outside the existing box with the default skin.
-- Pre-existing message arrows and activations are shaded grey: `A -[#888888]-> B` and `#EEEEEE` activation colour. New arrows use the default colour.
+- **Existing — blue.** Pre-existing participants/classes/components are grouped in a blue-tinted block: `box "Existing system" #D6EAF8 … end box` (sequence) or `package "Existing" #D6EAF8 { … }` (class / use-case / component). Pre-existing message arrows, activations, and component dependencies use the matching blue stroke / fill: `A -[#3498DB]-> B` for arrows and `#D6EAF8` for activations.
+- **New — green.** New participants/classes/components are grouped in a green-tinted block: `box "New" #D4EDDA … end box` (sequence) or `package "New" #D4EDDA { … }` (class / use-case / component). New arrows, activations, and dependencies use green: `C -[#27AE60]-> D` for arrows and `#D4EDDA` for activations. **Do not** use the default (uncoloured) skin for new elements — the colour is part of the convention so the diff is unambiguous.
 - Each diagram includes a small legend so the convention is self-documenting:
 
   ```plantuml
   legend right
     |= |= Meaning |
-    |<back:#EEEEEE>   </back>| existing (pre-`base-commit`) |
-    |<back:#FFFFFF>   </back>| new in this implementation |
+    |<back:#D6EAF8>   </back>| existing (pre-`base-commit`) |
+    |<back:#D4EDDA>   </back>| new in this implementation |
   endlegend
   ```
+
+  At stage 2 the legend's right-column wording shifts to reflect the cycle flavor (see `docs/blueprint-regeneration.md` Step C): for a bugfix cycle the legend reads "current (wrong) behavior" / "corrected behavior"; for an improvement cycle it reads "current capability" / "improved capability"; for greenfield it reads "pre-existing context" / "to be implemented." The colours stay the same — only the legend wording adapts.
 
 Use the PlantUML MCP (`plantuml` server) to render each diagram. Save the `.puml` source. Skip the `.svg` render — the millwright never reads `.svg` files (they're banned by the review commands' hard exclusion), and PlantUML sources are what the overseer diffs.
 
