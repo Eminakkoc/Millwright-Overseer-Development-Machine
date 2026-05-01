@@ -18,73 +18,228 @@ The command remains manually invokable for recovery — e.g. when `/mo-resume-wo
 
 ## Execution
 
-### Step 1 — Resolve inputs
+### Step 0 — Top-of-command branch dispatch
+
+Before running the normal forward path, check for in-flight rotation states (a prior `/mo-complete-workflow` invocation may have been interrupted) and post-finish recovery states (the rotation completed but Step 7 housekeeping was interrupted). Four branches (one of which is the normal path):
 
 ```bash
-active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active)"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active 2>/dev/null || echo 'null')"
 
-# Verify overseer-review-completed
-oc="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get overseer-review-completed)"
-[[ "$oc" == "true" ]] || { echo "error: overseer-review not complete; run /mo-continue first" >&2; exit 1; }
+# Helper: read latest finalized v[N] under a feature's history.
+latest_finalized_version() {
+  local feat="$1"
+  local hist="$data_root/workflow-stream/$feat/blueprints/history"
+  [[ -d "$hist" ]] || { echo ""; return; }
+  ls -d "$hist"/v[0-9]* 2>/dev/null \
+    | grep -vE '\.(partial|partial\.tmp)$' \
+    | sed -n 's|.*/v\([0-9]\+\)$|\1|p' \
+    | sort -n | tail -1
+}
+
+# Helper: read latest finalized v[N]/reason.md.kind.
+latest_reason_kind() {
+  local feat="$1"
+  local v
+  v="$(latest_finalized_version "$feat")"
+  [[ -n "$v" ]] || { echo ""; return; }
+  $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get \
+    "$data_root/workflow-stream/$feat/blueprints/history/v${v}/reason.md" kind \
+    2>/dev/null || echo ""
+}
+
+# Helper: count partial directories for a feature; print the single one if exactly one exists.
+single_partial() {
+  local feat="$1"
+  local hist="$data_root/workflow-stream/$feat/blueprints/history"
+  [[ -d "$hist" ]] || { echo ""; return; }
+  local matches
+  matches=$(ls -d "$hist"/v[0-9]*.partial 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$matches" == "1" ]]; then
+    ls -d "$hist"/v[0-9]*.partial 2>/dev/null
+  fi
+}
+```
+
+**Branch 0a — in-flight rotation matching completion.** If `active != null` AND there is exactly one `v[K].partial/` for `active.feature` AND its `reason.md.kind == "completion"`, the prior invocation crashed mid-rotation. Resume the rotation, skip Steps 1–4, and proceed to Step 5 onward. (Step 5 archival uses `mv -n` and is already idempotent — re-entry picks up cleanly even when Step 5 landed some artifacts before the prior crash.)
+
+```bash
+if [[ "$active_feature" != "null" && -n "$active_feature" ]]; then
+  partial_dir="$(single_partial "$active_feature")"
+  if [[ -n "$partial_dir" ]]; then
+    partial_kind="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$partial_dir/reason.md" kind 2>/dev/null || echo "")"
+    if [[ "$partial_kind" == "completion" ]]; then
+      version="$($CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh resume-partial "$active_feature" --expected-kind completion)"
+      echo "Resumed in-flight completion rotation: history/v${version}/"
+      branch_route="0a"  # remembered so we know to skip Steps 1-4
+    elif [[ -n "$partial_kind" ]]; then
+      # Branch 0b — different-kind partial blocks completion rotation.
+      echo "error: completion rotation refused — a $partial_kind rotation is already partial at $partial_dir." >&2
+      echo "Finish or abandon that rotation first (run the command that owns its kind, or repair manually)." >&2
+      exit 1
+    fi
+  fi
+fi
+```
+
+**Branch I — post-finish recovery (active=null).** If `active == null` AND `progress.completed` is non-empty AND the latest finalized history version for `completed[-1]` has `reason.kind == "completion"`, then rotation + `progress.sh finish` ran but the housekeeping (Step 7) was interrupted. Reconstruct `active_feature` from `completed[-1]` and `remaining` from the queue, skip Steps 1–6, and run Step 7 only. Do NOT call `progress.sh get` for active fields in this branch (active is null).
+
+```bash
+if [[ "$active_feature" == "null" || -z "$active_feature" ]]; then
+  completed_last="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh queue-remaining 2>/dev/null >/dev/null; \
+    python3 -c "
+import sys, re, yaml
+with open('$data_root/quest/active.md') as f:
+    slug = yaml.safe_load(f.read().split('---')[1]).get('slug')
+import os
+prog = '$data_root/quest/' + slug + '/progress.md'
+with open(prog) as f:
+    fm = yaml.safe_load(f.read().split('---')[1])
+completed = fm.get('completed') or []
+print(completed[-1] if completed else '')
+")"
+  if [[ -n "$completed_last" ]]; then
+    last_kind="$(latest_reason_kind "$completed_last")"
+    if [[ "$last_kind" == "completion" ]]; then
+      active_feature="$completed_last"
+      branch_route="I"
+      echo "Branch I: post-finish recovery for $active_feature; running Step 7 housekeeping only."
+    fi
+  fi
+  if [[ "${branch_route:-}" != "I" ]]; then
+    echo "error: /mo-complete-workflow requires an active feature, but progress.md.active is null and no Branch I recovery condition was met. Run /mo-continue or /mo-resume-workflow for diagnosis." >&2
+    exit 1
+  fi
+fi
+
+# Verify overseer-review-completed only on the normal path (Branches 0a, II, III need it;
+# Branch I has active=null so the guard is skipped).
+if [[ "${branch_route:-III}" != "I" ]]; then
+  oc="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get overseer-review-completed 2>/dev/null || echo 'false')"
+  [[ "$oc" == "true" ]] || { echo "error: overseer-review not complete; run /mo-continue first" >&2; exit 1; }
+fi
+```
+
+**Branch II — in-flight rotation already done (active!=null, finalized vN/).** If `active != null` AND `blueprints/current/requirements.md` is missing AND the latest finalized history version for `active.feature` has `reason.kind == "completion"`, the rotation completed but Step 5 (or later) was interrupted. Set `$version=N` and proceed Step 5 → 6 → 7.
+
+```bash
+if [[ "${branch_route:-}" == "" && "$active_feature" != "null" ]]; then
+  if [[ ! -f "$data_root/workflow-stream/$active_feature/blueprints/current/requirements.md" ]]; then
+    last_kind="$(latest_reason_kind "$active_feature")"
+    if [[ "$last_kind" == "completion" ]]; then
+      version="$(latest_finalized_version "$active_feature")"
+      branch_route="II"
+      echo "Branch II: rotation already done at history/v${version}/; resuming from Step 5."
+    fi
+  fi
+fi
+```
+
+**Branch III — normal forward path.** Falls through to Step 1 below. Before Step 4's completion rotate, the normal path runs `blueprints.sh check-current --require-primer "$active_feature"` and requires `0` (completion rotation must never archive a current/ tree that is missing the stage-3 primer; see Item 9 of the v11 progress-gap plan).
+
+### Step 1 — Resolve inputs
+
+(Skipped when `branch_route` is `0a`, `I`, or `II`.)
+
+```bash
+if [[ "${branch_route:-III}" == "III" ]]; then
+  : "${active_feature:?already resolved above}"
+
+  # Verify overseer-review-completed (re-checked here for the normal path).
+  oc="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get overseer-review-completed)"
+  [[ "$oc" == "true" ]] || { echo "error: overseer-review not complete; run /mo-continue first" >&2; exit 1; }
+fi
 ```
 
 The chain's plan / spec files under `docs/superpowers/` are not touched by this command — those artefacts belong to the brainstorming chain, not the mo-workflow. Cross-referencing between requirements and commits lives in `requirements.md`'s `commits:` field (populated below).
 
 ### Step 2 — Transition todos IMPLEMENTING → IMPLEMENTED
 
+(Skipped on Branch I — the prior invocation already ran this before the housekeeping interruption.)
+
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/todo.sh bulk-transition IMPLEMENTING IMPLEMENTED --feature "$active_feature"
+if [[ "${branch_route:-III}" == "III" || "${branch_route:-}" == "0a" || "${branch_route:-}" == "II" ]]; then
+  $CLAUDE_PLUGIN_ROOT/scripts/todo.sh bulk-transition IMPLEMENTING IMPLEMENTED --feature "$active_feature"
+fi
 ```
 
 The `--feature` filter scopes the transition to items under the active feature's section header only, so sibling features still mid-flight in a multi-feature queue are not touched.
 
 ### Step 3 — Populate commits in requirements.md
 
+(Skipped on Branch I.)
+
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/commits.sh populate-requirements "$active_feature"
+if [[ "${branch_route:-III}" == "III" || "${branch_route:-}" == "0a" || "${branch_route:-}" == "II" ]]; then
+  $CLAUDE_PLUGIN_ROOT/scripts/commits.sh populate-requirements "$active_feature"
+fi
 ```
 
 ### Step 4 — Rotate blueprints/current → history/v[N+1]
 
+(Only runs on Branch III. Branch 0a's `version` was set by `blueprints.sh resume-partial`; Branch II's `version` was set by the Branch II detection.)
+
 ```bash
-version="$($CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh rotate "$active_feature" \
-  --reason-kind completion \
-  --reason-summary "completed at stage 8 for $active_feature")"
-echo "Blueprints archived into history/v${version}"
+if [[ "${branch_route:-III}" == "III" ]]; then
+  # Preflight (Item 9 + Item 6): completion rotate must NEVER archive a current/
+  # tree that is missing the stage-3 primer. Refuse with a diagnostic if so.
+  if "$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh" check-current --require-primer "$active_feature"; then
+    cc_status=0
+  else
+    cc_status=$?
+  fi
+  if [[ "$cc_status" != "0" ]]; then
+    echo "error: blueprints/current is incomplete (check-current --require-primer returned $cc_status). Completion rotation refused — repair current/ (regenerate primer.md, ensure all artifacts validate) before re-running /mo-complete-workflow." >&2
+    exit 1
+  fi
+  version="$($CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh rotate "$active_feature" \
+    --reason-kind completion \
+    --reason-summary "completed at stage 8 for $active_feature")"
+  echo "Blueprints archived into history/v${version}"
+fi
 ```
 
 ### Step 5 — Archive implementation/ into the rotated history version
 
+(Skipped on Branch I. Idempotent for Branch 0a re-entry — `mv -n` refuses to overwrite, so artifacts already moved on a prior partial run stay put.)
+
 Stage 4 rotated `blueprints/current/` into `blueprints/history/v${version}/`. The just-finished implementation artifacts (`overseer-review.md`, `review-context.md`, `change-summary.md`, and `diagrams/`) are part of the same audit record, so move them into a sibling `implementation/` subfolder under the new history version. This preserves every finding (including any `status: open` ones the overseer chose to defer) and the diagrams of `base-commit..HEAD` for posterity. The live `implementation/` folder is then empty and the next feature's stage-2 launcher re-creates children there.
 
 ```bash
-data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
-impl_dir="$data_root/workflow-stream/$active_feature/implementation"
-archive_dir="$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/implementation"
-mkdir -p "$archive_dir"
+if [[ "${branch_route:-III}" == "III" || "${branch_route:-}" == "0a" || "${branch_route:-}" == "II" ]]; then
+  impl_dir="$data_root/workflow-stream/$active_feature/implementation"
+  archive_dir="$data_root/workflow-stream/$active_feature/blueprints/history/v${version}/implementation"
+  mkdir -p "$archive_dir"
 
-# Move each artifact if it exists. Using `mv -n` keeps it idempotent if the
-# command is re-invoked after a partial run; mv would otherwise refuse to
-# overwrite an existing target.
-for artifact in overseer-review.md review-context.md change-summary.md; do
-  [[ -e "$impl_dir/$artifact" ]] && mv -n "$impl_dir/$artifact" "$archive_dir/$artifact"
-done
-[[ -d "$impl_dir/diagrams" ]] && mv -n "$impl_dir/diagrams" "$archive_dir/diagrams"
-# Leave the implementation/ folder itself in place (empty) — next workflow re-creates children.
+  # Move each artifact if it exists. Using `mv -n` keeps it idempotent if the
+  # command is re-invoked after a partial run; mv would otherwise refuse to
+  # overwrite an existing target.
+  for artifact in overseer-review.md review-context.md change-summary.md; do
+    [[ -e "$impl_dir/$artifact" ]] && mv -n "$impl_dir/$artifact" "$archive_dir/$artifact"
+  done
+  [[ -d "$impl_dir/diagrams" ]] && mv -n "$impl_dir/diagrams" "$archive_dir/diagrams"
+  # Leave the implementation/ folder itself in place (empty) — next workflow re-creates children.
+fi
 ```
 
 The historical snapshot is then complete: `blueprints/history/v${version}/` carries the rotated `requirements.md`, `config.md`, `diagrams/`, `primer.md`, `reason.md`, AND `implementation/` (review file, review-context, change-summary, implementation diagrams). PMs querying past cycles can read the full audit trail from this single folder per feature-version.
 
 ### Step 6 — Finish the active feature
 
+(Skipped on Branch I — `progress.sh finish` already ran in the prior invocation that left active=null. Re-running it would error: require_active rejects null active.)
+
 Archive the active feature into `completed` and set `active` to null. Under the two-step activation model, `/mo-apply-impact` will activate the next feature from the queue when it's invoked next.
 
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh finish >/dev/null
+if [[ "${branch_route:-III}" == "III" || "${branch_route:-}" == "0a" || "${branch_route:-}" == "II" ]]; then
+  $CLAUDE_PLUGIN_ROOT/scripts/progress.sh finish >/dev/null
+fi
 remaining="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh queue-remaining 2>/dev/null || echo '')"
 ```
 
 ### Step 7 — Report and auto-continue
+
+(Runs on every branch including Branch I — this is the housekeeping that Branch I exists to recover.)
 
 If `remaining` is empty, check whether unmarked TODO items still exist in the cycle's `todo-list.md`. If so, the overseer can extend this cycle by marking more items rather than running `/mo-run` from scratch:
 

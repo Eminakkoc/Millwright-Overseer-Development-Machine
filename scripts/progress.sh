@@ -28,8 +28,26 @@
 #   progress.sh queue-remaining              # prints queue entries, one per line
 #
 #   progress.sh get <field>                  # reads active.<field>; errors if active is null
-#   progress.sh set <field>=<value> ...      # writes active.<field>; errors if active is null
+#   progress.sh set <field>=<value> ...      # writes active.<field>(s) atomically; errors if
+#                                            # active is null. All fields are validated first
+#                                            # (immutable-field rejection, duplicate-field rejection,
+#                                            # yaml.safe_load value parsing); the candidate state is
+#                                            # written to a same-directory temp file, validated
+#                                            # against the progress schema, and atomically renamed
+#                                            # over progress.md. Single-field behavior is identical
+#                                            # to the legacy per-field loop.
 #   progress.sh advance <expected-stage>     # increments active.current-stage if it matches
+#   progress.sh advance-to <expected-current> <target> [--set field=value]...
+#                                            # atomic stage skip-transition. expected-current must
+#                                            # equal active.current-stage; target must be one of the
+#                                            # whitelisted skip pairs (3→5, 5→7, 6→7). Adjacent
+#                                            # transitions stay with `advance`. --set field=value pairs
+#                                            # are applied in the same atomic write as the stage update;
+#                                            # current-stage is rejected from --set (the helper owns it),
+#                                            # immutable fields are rejected, duplicate --set fields are
+#                                            # rejected, all values parse via yaml.safe_load. Same write
+#                                            # pipeline as `set`: validate → temp file → schema validate
+#                                            # → atomic rename.
 #
 #   progress.sh check-worktree               # pre-flight: errors if the current working tree is
 #                                            # not the one that activated the cycle. No-op when
@@ -379,36 +397,65 @@ PYEOF
     require_file "$dest"
     require_active "$dest"
     mo_assert_worktree_match
-    for kv in "$@"; do
-      field="${kv%%=*}"
-      value="${kv#*=}"
-      # The worktree fingerprint is captured once at activate; refuse
-      # later overwrites so the guard's anchor can't be erased.
-      case "$field" in
-        worktree-path|git-common-dir|git-worktree-dir)
-          mo_die "progress.sh set: $field is immutable after activate (captured at stage 2)"
-          ;;
-      esac
-      python3 - "$dest" "$field" "$value" <<'PYEOF'
+    # Batched implementation: validate every field first (immutable rejection,
+    # duplicate rejection, value parsing), build the candidate state in one
+    # Python pass, write to a same-directory temp file, schema-validate the
+    # temp, then atomically rename it over progress.md. Avoids half-written
+    # states (e.g., base-commit captured but history-baseline-version missing)
+    # and invalid-destination states from typo'd field names.
+    tmp="$(mktemp "$(dirname "$dest")/progress.md.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    if ! python3 - "$dest" "$tmp" "$@" <<'PYEOF'; then
 import sys, re, yaml
-path, field, value = sys.argv[1:]
+path, tmp = sys.argv[1], sys.argv[2]
+kvs = sys.argv[3:]
+
+IMMUTABLE = {'worktree-path', 'git-common-dir', 'git-worktree-dir'}
+seen = set()
+parsed_kvs = []
+for kv in kvs:
+    if '=' not in kv:
+        sys.stderr.write(f"error: progress.sh set: invalid field=value: {kv!r}\n")
+        sys.exit(1)
+    field, value = kv.split('=', 1)
+    if field in IMMUTABLE:
+        sys.stderr.write(f"error: progress.sh set: {field} is immutable after activate (captured at stage 2)\n")
+        sys.exit(1)
+    if field in seen:
+        sys.stderr.write(f"error: progress.sh set: duplicate field {field!r} in args\n")
+        sys.exit(1)
+    seen.add(field)
+    try:
+        parsed_value = yaml.safe_load(value)
+    except yaml.YAMLError:
+        parsed_value = value
+    parsed_kvs.append((field, parsed_value))
+
 with open(path) as f:
     content = f.read()
 m = re.match(r'^---\n(.*?)\n---\n(.*)$', content, re.DOTALL)
+if not m:
+    sys.stderr.write(f"error: progress.sh set: {path} has no frontmatter block\n")
+    sys.exit(1)
 fm = yaml.safe_load(m.group(1)) or {}
-try:
-    parsed = yaml.safe_load(value)
-except yaml.YAMLError:
-    parsed = value
-fm['active'][field] = parsed
-with open(path, 'w') as f:
+if fm.get('active') is None:
+    sys.stderr.write("error: progress.sh set: active is null (require_active should have caught this)\n")
+    sys.exit(1)
+for field, parsed_value in parsed_kvs:
+    fm['active'][field] = parsed_value
+with open(tmp, 'w') as f:
     f.write('---\n')
     f.write(yaml.safe_dump(fm, default_flow_style=False, sort_keys=False))
     f.write('---\n')
     f.write(m.group(2))
 PYEOF
-    done
-    "${MO_PLUGIN_ROOT}/scripts/frontmatter.sh" validate "$dest" progress >/dev/null
+      exit 1
+    fi
+    if ! "${MO_PLUGIN_ROOT}/scripts/frontmatter.sh" validate "$tmp" progress >/dev/null; then
+      mo_die "progress.sh set: candidate state failed schema validation; original file unchanged"
+    fi
+    mv "$tmp" "$dest"
+    trap - EXIT
     ;;
 
   advance)
@@ -440,6 +487,116 @@ PYEOF
     mo_info "advanced to stage $next"
     ;;
 
+  advance-to)
+    expected="${1:?expected current-stage required}"; shift
+    target="${1:?target stage required}"; shift
+    # Stage-pair whitelist: only these skip-transitions are legal. Adjacent
+    # transitions must use `advance` (which catches typo'd targets via the
+    # off-by-one check). The whitelist exists so the dispatcher's intentional
+    # skips (3→5 after stage-4 collapses into the Resume Handler; 5→7 on the
+    # no-findings approve path; 6→7 on the review-resume finalize path) can't
+    # be confused with arbitrary stage jumps.
+    case "${expected}-${target}" in
+      3-5|5-7|6-7) ;;
+      *)
+        mo_die "advance-to: stage transition ${expected} → ${target} not in whitelist (allowed: 3→5, 5→7, 6→7). Adjacent transitions use 'advance'."
+        ;;
+    esac
+    # Parse --set field=value args (zero or more).
+    set_args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --set)
+          [[ $# -ge 2 ]] || mo_die "advance-to: --set requires field=value"
+          set_args[${#set_args[@]}]="$2"
+          shift 2
+          ;;
+        --set=*)
+          set_args[${#set_args[@]}]="${1#--set=}"
+          shift
+          ;;
+        *)
+          mo_die "advance-to: unknown argument: $1 (expected --set field=value)"
+          ;;
+      esac
+    done
+    dest="$(progress_file)"
+    require_file "$dest"
+    require_active "$dest"
+    mo_assert_worktree_match
+    tmp="$(mktemp "$(dirname "$dest")/progress.md.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    # Build the python args list explicitly so empty set_args expansion works
+    # under bash 3.2 (which trips on "${set_args[@]+...}" idioms).
+    py_args=("$dest" "$tmp" "$expected" "$target")
+    if [[ ${#set_args[@]} -gt 0 ]]; then
+      for kv in "${set_args[@]}"; do py_args[${#py_args[@]}]="$kv"; done
+    fi
+    if ! python3 - "${py_args[@]}" <<'PYEOF'; then
+import sys, re, yaml
+path, tmp, expected_str, target_str = sys.argv[1:5]
+kvs = sys.argv[5:]
+expected = int(expected_str)
+target = int(target_str)
+
+IMMUTABLE = {'worktree-path', 'git-common-dir', 'git-worktree-dir'}
+seen = set()
+parsed_kvs = []
+for kv in kvs:
+    if '=' not in kv:
+        sys.stderr.write(f"error: advance-to: invalid --set field=value: {kv!r}\n")
+        sys.exit(1)
+    field, value = kv.split('=', 1)
+    if field == 'current-stage':
+        sys.stderr.write("error: advance-to: --set may not target current-stage (the helper owns that field)\n")
+        sys.exit(1)
+    if field in IMMUTABLE:
+        sys.stderr.write(f"error: advance-to: {field} is immutable after activate (captured at stage 2)\n")
+        sys.exit(1)
+    if field in seen:
+        sys.stderr.write(f"error: advance-to: duplicate --set field {field!r}\n")
+        sys.exit(1)
+    seen.add(field)
+    try:
+        parsed_value = yaml.safe_load(value)
+    except yaml.YAMLError:
+        parsed_value = value
+    parsed_kvs.append((field, parsed_value))
+
+with open(path) as f:
+    content = f.read()
+m = re.match(r'^---\n(.*?)\n---\n(.*)$', content, re.DOTALL)
+if not m:
+    sys.stderr.write(f"error: advance-to: {path} has no frontmatter block\n")
+    sys.exit(1)
+fm = yaml.safe_load(m.group(1)) or {}
+if fm.get('active') is None:
+    sys.stderr.write("error: advance-to: active is null (require_active should have caught this)\n")
+    sys.exit(1)
+current = fm['active'].get('current-stage')
+if current != expected:
+    sys.stderr.write(f"error: advance-to: stage mismatch — active.current-stage={current}, expected {expected}\n")
+    sys.exit(1)
+
+fm['active']['current-stage'] = target
+for field, parsed_value in parsed_kvs:
+    fm['active'][field] = parsed_value
+with open(tmp, 'w') as f:
+    f.write('---\n')
+    f.write(yaml.safe_dump(fm, default_flow_style=False, sort_keys=False))
+    f.write('---\n')
+    f.write(m.group(2))
+PYEOF
+      exit 1
+    fi
+    if ! "${MO_PLUGIN_ROOT}/scripts/frontmatter.sh" validate "$tmp" progress >/dev/null; then
+      mo_die "advance-to: candidate state failed schema validation; original file unchanged"
+    fi
+    mv "$tmp" "$dest"
+    trap - EXIT
+    mo_info "advanced from stage $expected to stage $target"
+    ;;
+
   check-worktree)
     # Public pre-flight gate. Fails with a guidance message when the
     # current working tree is not the one that activated the active
@@ -448,7 +605,7 @@ PYEOF
     ;;
 
   *)
-    echo "usage: progress.sh {init|activate|finish|requeue|reset|reorder|enqueue|get-active|queue-remaining|get|set|advance|check-worktree} ..." >&2
+    echo "usage: progress.sh {init|activate|finish|requeue|reset|reorder|enqueue|get-active|queue-remaining|get|set|advance|advance-to|check-worktree} ..." >&2
     exit 2
     ;;
 esac

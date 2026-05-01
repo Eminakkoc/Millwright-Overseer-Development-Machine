@@ -6,7 +6,28 @@
 #   blueprints.sh rotate <feature> \
 #     --reason-kind <kind> \
 #     --reason-summary <text>                    # move current/ into history/v[N+1]/;
-#                                                # write reason.md; prints N+1
+#                                                # write reason.md; prints N+1.
+#                                                # Resumable: if a v[K].partial/
+#                                                # exists with the same reason kind,
+#                                                # resume it instead of starting a fresh
+#                                                # rotation. Forward path publishes via
+#                                                # .partial.tmp → .partial → vN so a
+#                                                # session break never strands current/
+#                                                # contents in an unidentified partial.
+#                                                # Refuses on multiple partials, on
+#                                                # finalized vN/ missing reason.md, and
+#                                                # on partials whose kind doesn't match.
+#   blueprints.sh resume-partial <feature> \
+#     --expected-kind <kind>                     # Resume the unique partial under
+#                                                # history/ when its reason.kind matches
+#                                                # --expected-kind. Errors on missing
+#                                                # partial, multiple partials, kind
+#                                                # mismatch, or unrecoverable shapes.
+#                                                # Used by /mo-update-blueprint and
+#                                                # /mo-complete-workflow when their
+#                                                # top-of-command branches detect a
+#                                                # resumable partial that matches the
+#                                                # caller's intent.
 #   blueprints.sh preserve-overseer-sections \
 #     <feature> <from-version>                   # copy ## GIT BRANCH and
 #                                                # ## Overseer Additions bodies from
@@ -16,6 +37,33 @@
 #                                                # Idempotent. Use after rotate +
 #                                                # regenerate to keep overseer-authored
 #                                                # sections alive across rotations.
+#   blueprints.sh check-current [--require-primer] <feature>
+#                                                # Inspect blueprints/current/<feature>/
+#                                                # for completeness. Returns:
+#                                                #   0 — complete (requirements.md valid,
+#                                                #       config.md valid, diagrams/README.md
+#                                                #       valid + requirements-id matches,
+#                                                #       at least one use-case-*.puml).
+#                                                #       With --require-primer: also primer.md
+#                                                #       valid + requirements-id matches.
+#                                                #   1 — empty (req AND config both missing
+#                                                #       AND diagrams/ missing or scaffold-only).
+#                                                #       Missing primer in --require-primer mode
+#                                                #       does NOT promote empty to partial.
+#                                                #   2 — partial (anything in between, including
+#                                                #       --require-primer + missing/invalid primer).
+#                                                # Sequence and structural diagrams are NOT
+#                                                # required here; the spec calls them conditional.
+#                                                # The overseer verifies flow coverage at the
+#                                                # stage-2 review gate.
+#   blueprints.sh branch-status <feature>        # Inspect config.md's ## GIT BRANCH section.
+#                                                # Prints one of:
+#                                                #   set    — exactly one non-trunk branch
+#                                                #   unset  — section empty or absent
+#                                                #   trunk  — exactly one branch but it's main/master
+#                                                #   multi  — two or more candidate branches
+#                                                # Used by /mo-plan-implementation for branch
+#                                                # validation; check-current does not gate on it.
 #
 # Valid --reason-kind values:
 #   completion | spec-update | re-spec-cascade | re-plan-cascade | manual
@@ -60,32 +108,210 @@ case "$cmd" in
     history="$(mo_blueprints_history "$feature")"
     [[ -d "$current" ]] || mo_die "blueprints/current not found for feature=$feature"
     mkdir -p "$history"
-    # Find highest existing v[N]; next is N+1.
-    next_n=1
-    if compgen -G "$history/v*" >/dev/null; then
-      next_n=$(ls -d "$history"/v* 2>/dev/null | \
-               sed -n 's|.*/v\([0-9]\+\)$|\1|p' | \
-               sort -n | tail -1)
-      next_n=$((next_n + 1))
-    fi
-    dest="$history/v${next_n}"
-    mkdir -p "$dest"
-    # Move all children of current/ into dest/.
-    shopt -s dotglob nullglob
-    for entry in "$current"/*; do
-      mv "$entry" "$dest/"
-    done
-    shopt -u dotglob nullglob
 
-    # Write reason.md into the new history folder.
+    # Preflight: scan finalized vN/ directories. Any finalized v[K] missing
+    # reason.md is the old-format interrupted shape (pre-resumability); refuse
+    # to proceed until an overseer repairs it. We must not guess the reason
+    # kind of an unidentified finalized rotation, nor count it as a safe parent.
+    shopt -s nullglob
+    finalized_max=0
+    finalized_count=0
+    for d in "$history"/v[0-9]*; do
+      [[ "$d" == *.partial || "$d" == *.partial.tmp ]] && continue
+      base="${d##*/v}"
+      [[ "$base" =~ ^[0-9]+$ ]] || continue
+      if [[ ! -f "$d/reason.md" ]]; then
+        shopt -u nullglob
+        mo_die "rotate: finalized history directory $d is missing reason.md (old-format interrupted rotation; manual repair required before any new rotation can proceed)"
+      fi
+      finalized_count=$((finalized_count + 1))
+      if [[ $base -gt $finalized_max ]]; then
+        finalized_max=$base
+      fi
+    done
+
+    # Collect partial directories of both shapes.
+    partials=()
+    tmp_partials=()
+    for d in "$history"/v[0-9]*.partial; do
+      partials[${#partials[@]}]="$d"
+    done
+    for d in "$history"/v[0-9]*.partial.tmp; do
+      tmp_partials[${#tmp_partials[@]}]="$d"
+    done
+    shopt -u nullglob
+
+    # Cross-product STOP: total partial count > 1 is ambiguous regardless of K
+    # or shape. The forward path only ever creates .partial.tmp for the current
+    # next_n, so two-or-more partials means a previously-interrupted recovery
+    # left orphans — refuse loudly instead of guessing which to resume.
+    total_partials=$((${#partials[@]} + ${#tmp_partials[@]}))
+    if [[ $total_partials -gt 1 ]]; then
+      msg="rotate: ambiguous recovery state — $total_partials partial directories under $history. Manual reconciliation required."
+      for p in "${partials[@]}"; do msg+="
+  - $p"; done
+      for p in "${tmp_partials[@]}"; do msg+="
+  - $p"; done
+      mo_die "$msg"
+    fi
+
+    # Exactly one .partial: kind-matched recovery.
+    if [[ ${#partials[@]} -eq 1 ]]; then
+      partial="${partials[0]}"
+      partial_K="${partial##*/v}"; partial_K="${partial_K%.partial}"
+      reason_file="$partial/reason.md"
+      if [[ ! -f "$reason_file" ]]; then
+        if [[ -z "$(ls -A "$partial" 2>/dev/null)" ]]; then
+          # Empty + missing reason → safe to remove (no artifacts moved yet).
+          rmdir "$partial"
+          mo_info "rotate: removed empty partial $partial (no reason.md, no contents)"
+        else
+          mo_die "rotate: partial directory $partial has artifacts but no reason.md (old/unknown partial; manual cleanup required)"
+        fi
+      else
+        partial_kind="$(mo_fm_get "$reason_file" kind 2>/dev/null || echo "")"
+        if [[ "$partial_kind" != "$reason_kind" ]]; then
+          mo_die "rotate: partial $partial has reason.kind='$partial_kind' but requested --reason-kind='$reason_kind' (different commands cannot share a partial; finish or abandon the existing partial first)"
+        fi
+        # Resume: move any remaining current/* into vK.partial/, rename → vK.
+        shopt -s dotglob nullglob
+        for entry in "$current"/*; do
+          mv "$entry" "$partial/"
+        done
+        shopt -u dotglob nullglob
+        mv "$partial" "$history/v${partial_K}"
+        mkdir -p "$current"
+        mo_info "rotate: resumed v${partial_K}.partial → v${partial_K} (kind=$reason_kind)"
+        echo "$partial_K"
+        exit 0
+      fi
+    fi
+
+    # Exactly one .partial.tmp: empty/reason-only is safe to remove; otherwise
+    # STOP (this shape is unreachable under the new forward path beyond the
+    # post-reason-write window, so unexpected contents indicate state corruption).
+    if [[ ${#tmp_partials[@]} -eq 1 ]]; then
+      tmp_partial="${tmp_partials[0]}"
+      contents="$(ls -A "$tmp_partial" 2>/dev/null)"
+      if [[ -z "$contents" || "$contents" == "reason.md" ]]; then
+        rm -rf "$tmp_partial"
+        mo_info "rotate: removed unpublished temp $tmp_partial (empty or reason-only)"
+      else
+        mo_die "rotate: unpublished temp $tmp_partial has unexpected contents (manual cleanup required); contents: $contents"
+      fi
+    fi
+
+    # Forward path: pick next_n from finalized versions only.
+    next_n=$((finalized_max + 1))
+
+    # Step 1: mkdir v[next_n].partial.tmp.
+    tmp_dest="$history/v${next_n}.partial.tmp"
+    mkdir "$tmp_dest"
+
+    # Step 2: write + validate reason.md inside .partial.tmp.
     triggered_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    "${MO_PLUGIN_ROOT}/scripts/frontmatter.sh" init reason "$dest/reason.md" \
+    "${MO_PLUGIN_ROOT}/scripts/frontmatter.sh" init reason "$tmp_dest/reason.md" \
       "KIND=$reason_kind" \
       "TRIGGERED_AT=$triggered_at" \
       "SUMMARY=$reason_summary" >/dev/null
 
+    # Step 3: atomic rename .partial.tmp → .partial (publishes recoverable intent).
+    partial_dest="$history/v${next_n}.partial"
+    mv "$tmp_dest" "$partial_dest"
+
+    # Step 4: move current/* into v[next_n].partial/.
+    shopt -s dotglob nullglob
+    for entry in "$current"/*; do
+      mv "$entry" "$partial_dest/"
+    done
+    shopt -u dotglob nullglob
+
+    # Step 5: atomic rename .partial → vN (finalizes the rotation).
+    final_dest="$history/v${next_n}"
+    mv "$partial_dest" "$final_dest"
+
+    # Step 6: recreate empty current/ (next stage's launcher fills it).
+    mkdir -p "$current"
+
     mo_info "rotated blueprints/current to history/v${next_n} (kind=$reason_kind)"
     echo "$next_n"
+    ;;
+
+  resume-partial)
+    feature="${1:?feature required}"; shift
+    expected_kind=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --expected-kind)
+          expected_kind="${2:?--expected-kind requires a value}"
+          shift 2
+          ;;
+        *)
+          mo_die "unknown flag: $1"
+          ;;
+      esac
+    done
+    [[ -n "$expected_kind" ]] || mo_die "--expected-kind is required (one of: completion, spec-update, re-spec-cascade, re-plan-cascade, manual)"
+
+    current="$(mo_blueprints_current "$feature")"
+    history="$(mo_blueprints_history "$feature")"
+    [[ -d "$history" ]] || mo_die "resume-partial: history directory not found for feature=$feature"
+
+    shopt -s nullglob
+    partials=()
+    tmp_partials=()
+    for d in "$history"/v[0-9]*.partial; do
+      partials[${#partials[@]}]="$d"
+    done
+    for d in "$history"/v[0-9]*.partial.tmp; do
+      tmp_partials[${#tmp_partials[@]}]="$d"
+    done
+    shopt -u nullglob
+
+    total_partials=$((${#partials[@]} + ${#tmp_partials[@]}))
+    if [[ $total_partials -eq 0 ]]; then
+      mo_die "resume-partial: no partial directory found under $history"
+    fi
+    if [[ $total_partials -gt 1 ]]; then
+      mo_die "resume-partial: multiple partial directories under $history (count: $total_partials); manual reconciliation required"
+    fi
+
+    if [[ ${#tmp_partials[@]} -eq 1 ]]; then
+      tmp_partial="${tmp_partials[0]}"
+      contents="$(ls -A "$tmp_partial" 2>/dev/null)"
+      if [[ -z "$contents" || "$contents" == "reason.md" ]]; then
+        rm -rf "$tmp_partial"
+        mo_info "resume-partial: removed unpublished temp $tmp_partial (empty or reason-only); no published partial to resume"
+        exit 0
+      fi
+      mo_die "resume-partial: unpublished temp $tmp_partial has unexpected contents (manual cleanup required); contents: $contents"
+    fi
+
+    partial="${partials[0]}"
+    partial_K="${partial##*/v}"; partial_K="${partial_K%.partial}"
+    reason_file="$partial/reason.md"
+    if [[ ! -f "$reason_file" ]]; then
+      if [[ -z "$(ls -A "$partial" 2>/dev/null)" ]]; then
+        rmdir "$partial"
+        mo_die "resume-partial: removed empty partial $partial (no reason.md); nothing to resume"
+      fi
+      mo_die "resume-partial: partial $partial has artifacts but no reason.md (old/unknown partial; manual cleanup required)"
+    fi
+    partial_kind="$(mo_fm_get "$reason_file" kind 2>/dev/null || echo "")"
+    if [[ "$partial_kind" != "$expected_kind" ]]; then
+      mo_die "resume-partial: partial $partial has reason.kind='$partial_kind' but caller expected '$expected_kind' (refuse to resume; another command owns this partial)"
+    fi
+
+    # Move any remaining current/* into vK.partial/, then atomic rename → vK.
+    shopt -s dotglob nullglob
+    for entry in "$current"/*; do
+      mv "$entry" "$partial/"
+    done
+    shopt -u dotglob nullglob
+    mv "$partial" "$history/v${partial_K}"
+    mkdir -p "$current"
+    mo_info "resume-partial: v${partial_K}.partial → v${partial_K} (kind=$expected_kind)"
+    echo "$partial_K"
     ;;
 
   preserve-overseer-sections)
@@ -144,8 +370,169 @@ sys.stderr.write(f"preserved {len(preserved)} section(s) from {src_path} → {de
 PYEOF
     ;;
 
+  check-current)
+    require_primer=0
+    if [[ "${1:-}" == "--require-primer" ]]; then
+      require_primer=1
+      shift
+    fi
+    feature="${1:?feature required}"
+    current="$(mo_blueprints_current "$feature")"
+    python3 - "$current" "$require_primer" "$MO_PLUGIN_ROOT" <<'PYEOF'
+import os, re, glob, subprocess, sys, yaml
+
+current, require_primer_str, plugin_root = sys.argv[1], sys.argv[2], sys.argv[3]
+require_primer = require_primer_str == "1"
+
+def fm_field(path, field):
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            content = f.read()
+    except OSError:
+        return None
+    m = re.match(r'^---\n(.*?)\n---\n', content, re.DOTALL)
+    if not m:
+        return None
+    try:
+        fm = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError:
+        return None
+    return fm.get(field) if isinstance(fm, dict) else None
+
+def has_non_placeholder_body(path):
+    """A body has substance if at least one line is non-blank, not an HTML
+    comment, and not a frontmatter delimiter."""
+    try:
+        with open(path) as f:
+            content = f.read()
+    except OSError:
+        return False
+    m = re.match(r'^---\n.*?\n---\n(.*)$', content, re.DOTALL)
+    body = m.group(1) if m else content
+    in_block_comment = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Track <!-- ... --> comments that may span lines.
+        if in_block_comment:
+            if '-->' in stripped:
+                in_block_comment = False
+            continue
+        if stripped.startswith('<!--'):
+            if '-->' not in stripped:
+                in_block_comment = True
+            continue
+        # Markdown headings count as substance (a real body has at least one
+        # heading or paragraph). A pure frontmatter file would have only blank
+        # / comment lines below the closing '---'.
+        return True
+    return False
+
+def validates(path, schema):
+    if not os.path.isfile(path):
+        return False
+    r = subprocess.run(
+        [f"{plugin_root}/scripts/internal/validate-frontmatter.sh", path, schema],
+        capture_output=True
+    )
+    return r.returncode == 0
+
+if not os.path.isdir(current):
+    sys.exit(1)
+
+req            = os.path.join(current, "requirements.md")
+cfg            = os.path.join(current, "config.md")
+diagrams_dir   = os.path.join(current, "diagrams")
+diagrams_rmd   = os.path.join(diagrams_dir, "README.md")
+primer         = os.path.join(current, "primer.md")
+
+req_present  = os.path.isfile(req)
+cfg_present  = os.path.isfile(cfg)
+ddir_present = os.path.isdir(diagrams_dir)
+drmd_present = os.path.isfile(diagrams_rmd)
+use_cases    = sorted(glob.glob(os.path.join(diagrams_dir, "use-case-*.puml"))) if ddir_present else []
+
+# Empty: req AND cfg both missing AND diagrams/ missing or scaffold-only
+# (no README, no use-case puml).
+diagrams_scaffold_only = ddir_present and not drmd_present and not use_cases
+diagrams_missing       = not ddir_present
+if not req_present and not cfg_present and (diagrams_missing or diagrams_scaffold_only):
+    sys.exit(1)
+
+# Complete-core: requirements + config + diagrams/README + at least one use-case puml,
+# all valid, with the README's requirements-id matching requirements.md's id.
+req_id = fm_field(req, "id") if req_present else None
+
+req_complete = req_present and validates(req, "requirements") and has_non_placeholder_body(req)
+cfg_complete = cfg_present and validates(cfg, "config") and has_non_placeholder_body(cfg)
+
+drmd_complete = False
+if drmd_present and req_id:
+    if validates(diagrams_rmd, "diagrams-readme-blueprint"):
+        if fm_field(diagrams_rmd, "requirements-id") == req_id:
+            drmd_complete = True
+
+diagrams_complete = ddir_present and drmd_complete and len(use_cases) >= 1
+
+core_complete = req_complete and cfg_complete and diagrams_complete
+
+if not require_primer:
+    sys.exit(0 if core_complete else 2)
+
+# --require-primer mode: also need primer.md valid + requirements-id match + body.
+primer_complete = False
+if os.path.isfile(primer) and req_id:
+    if validates(primer, "primer"):
+        if fm_field(primer, "requirements-id") == req_id and has_non_placeholder_body(primer):
+            primer_complete = True
+
+sys.exit(0 if core_complete and primer_complete else 2)
+PYEOF
+    ;;
+
+  branch-status)
+    feature="${1:?feature required}"
+    cfg="$(mo_blueprints_current "$feature")/config.md"
+    if [[ ! -f "$cfg" ]]; then
+      echo "unset"
+      exit 0
+    fi
+    python3 - "$cfg" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+# Find the ## GIT BRANCH section body (everything from heading to next ## or EOF).
+m = re.search(r'^## GIT BRANCH[ \t]*\n(.*?)(?=^## |\Z)', content, re.DOTALL | re.MULTILINE)
+if not m:
+    print("unset")
+    sys.exit(0)
+section = m.group(1)
+# Strip HTML comments (greedy, multi-line capable).
+section = re.sub(r'<!--.*?-->', '', section, flags=re.DOTALL)
+candidates = []
+for raw in section.splitlines():
+    line = raw.strip()
+    if not line:
+        continue
+    if line.startswith('-'):
+        continue
+    candidates.append(line)
+if not candidates:
+    print("unset")
+elif len(candidates) == 1:
+    branch = candidates[0]
+    print("trunk" if branch in ("main", "master") else "set")
+else:
+    print("multi")
+PYEOF
+    ;;
+
   *)
-    echo "usage: blueprints.sh {ensure-current|rotate|preserve-overseer-sections} ..." >&2
+    echo "usage: blueprints.sh {ensure-current|rotate|resume-partial|preserve-overseer-sections|check-current|branch-status} ..." >&2
     exit 2
     ;;
 esac

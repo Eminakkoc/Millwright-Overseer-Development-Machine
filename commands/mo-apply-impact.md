@@ -23,17 +23,74 @@ The command is still invokable manually for recovery — for example after `/mo-
 
 ## Execution
 
-### Step 1 — Activate the next feature
+### Step 1 — Activate (or re-enter) the active feature
 
-Pop `queue[0]` into the `active` block with fresh runtime state (current-stage=2, branch=null, everything else default). The command fails if `active` is already non-null — run `/mo-abort-workflow` or `/mo-complete-workflow` first to clear it.
+Three entry conditions, evaluated in order (Item 2 of the v11 plan):
+
+1. **`active` is null** — pop `queue[0]` into a fresh `active` block (current-stage=2, branch=null, all other runtime fields default). This is the original happy path.
+2. **`active.current-stage == 2`** — re-entering the same feature mid-stage-2 (e.g., a session break interrupted blueprint generation; the overseer re-runs `/mo-apply-impact` for the same feature). Skip activation and proceed to Step 2 with the existing `active.feature`. Surface `check-current` status so the overseer knows whether `current/` is already complete (`0` → short-circuit), partial (`2` → surface what's missing; offer `--force`), or empty (`1` → regenerate from scratch).
+3. **`active.current-stage > 2`** — a different feature is mid-flight. Refuse: the overseer must run `/mo-abort-workflow` to clear it before re-running `/mo-apply-impact`.
 
 ```bash
-active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh activate)"
-echo "Starting workflow for feature: $active_feature"
-$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+active_feature_pre="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active 2>/dev/null || echo 'null')"
+
+force_regen=0
+for arg in $ARGUMENTS; do
+  case "$arg" in
+    --force) force_regen=1 ;;
+  esac
+done
+
+if [[ "$active_feature_pre" == "null" || -z "$active_feature_pre" ]]; then
+  active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh activate)"
+  echo "Starting workflow for feature: $active_feature"
+  $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+else
+  current_stage="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get current-stage)"
+  if [[ "$current_stage" != "2" ]]; then
+    echo "error: feature '$active_feature_pre' is mid-flight at stage $current_stage. Run /mo-abort-workflow to clear before re-running /mo-apply-impact." >&2
+    exit 1
+  fi
+  active_feature="$active_feature_pre"
+  echo "Re-entering stage 2 for feature: $active_feature"
+  $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+
+  # Inspect what's already there. check-current is in default mode (no
+  # --require-primer): primer.md is not expected at stage 2.
+  if "$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh" check-current "$active_feature"; then
+    cc_status=0
+  else
+    cc_status=$?
+  fi
+  case "$cc_status" in
+    0)
+      if [[ "$force_regen" != "1" ]]; then
+        echo "blueprints/current is already complete for $active_feature. Skipping regeneration. Re-run with --force to regenerate from scratch, or type /mo-continue to advance to /mo-plan-implementation."
+        exit 0
+      fi
+      echo "--force passed; regenerating despite check-current=0."
+      ;;
+    1)
+      echo "blueprints/current is empty; regenerating from stage-2 inputs."
+      ;;
+    2)
+      if [[ "$force_regen" != "1" ]]; then
+        echo "warning: blueprints/current is partial (check-current=2). Inspect the existing files; re-run /mo-apply-impact --force to regenerate from scratch, or repair the files manually and type /mo-continue." >&2
+        exit 1
+      fi
+      echo "--force passed; clearing partial current/ and regenerating."
+      data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+      curr="$data_root/workflow-stream/$active_feature/blueprints/current"
+      shopt -s dotglob nullglob
+      for entry in "$curr"/*; do rm -rf "$entry"; done
+      shopt -u dotglob nullglob
+      $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+      ;;
+  esac
+fi
 ```
 
-If the queue is empty, the script errors out — tell the overseer and stop. Branch is declared per-feature in `config.md`'s `## GIT BRANCH` section (written later in this command) and validated at stage 3; `/mo-plan-implementation` will persist it into `active.branch`.
+If the queue is empty AND `active` was null, `progress.sh activate` errors out — tell the overseer and stop. Branch is declared per-feature in `config.md`'s `## GIT BRANCH` section (written later in this command) and validated at stage 3; `/mo-plan-implementation` will persist it into `active.branch`.
 
 ### Step 2 — Regenerate `blueprints/current/` content
 

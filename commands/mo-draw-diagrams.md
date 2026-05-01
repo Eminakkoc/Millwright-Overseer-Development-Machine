@@ -45,7 +45,7 @@ For `--target=implementation`, run the body of `mo-generate-implementation-diagr
 - reading the commit range `active.base-commit..HEAD`;
 - rendering use-case, sequence, and (if relevant) class diagrams via the PlantUML MCP into `workflow-stream/$active_feature/implementation/diagrams/`;
 - framing pre-existing system elements as shaded context next to the new functionality;
-- writing `implementation/diagrams/README.md` with the `requirements-id` back-reference.
+- writing `implementation/diagrams/README.md` with frontmatter `id: <new uuid>` + `stage: implementation` (validated against the `diagrams-readme-implementation` schema). This README intentionally does **not** carry a `requirements-id` — the requirements back-reference for the implementation lives in `implementation/change-summary.md` and the review artifacts (`overseer-review.md`, `review-context.md`).
 
 See `commands/mo-generate-implementation-diagrams.md` for the full step-by-step recipe.
 

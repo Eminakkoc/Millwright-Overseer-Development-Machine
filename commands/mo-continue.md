@@ -37,11 +37,16 @@ The dispatcher picks a handler based on whether a feature is active and, when ac
 
 **Pre-flight cases (`active_feature == "null"`):**
 
+Order matters — Rows A/B (auto-fire) must be evaluated **after** the manual-action rows (the overseer's `[x] TODO` and queue-rationale-missing signals take precedence over auto-fire) and **before** the catch-all (otherwise they'd never run). See Item 5 of the v11 progress-gap plan for the load-bearing rationale.
+
 | Condition | Handler |
 | --- | --- |
 | `[x] TODO` lines exist in `todo-list.md` (selections not yet promoted) | **Pre-flight Step 2A** — promote + propose order |
 | no `[x] TODO` lines, `queue_count > 0`, `queue-rationale.md` missing | **Pre-flight Step 2B** — confirm proposed order + auto-fire `/mo-apply-impact` |
-| `queue_count == 0` and no `[x] TODO` lines | Delegate to `/mo-resume-workflow` |
+| no `[x] TODO` lines, `queue_count > 0`, `queue-rationale.md` present, top-level `status: draft` (Item 7 multi-batch) | **Pre-flight Step 2B** (extended) — confirm/update the latest batch, refresh top-level `features:`/`batch:`, flip `status` to `confirmed`, auto-fire `/mo-apply-impact` |
+| **Row A — between features:** active is null AND `queue_count > 0` AND `queue-rationale.md.status` (or absent → confirmed) is `confirmed` AND `(queue-rationale.md.features − progress.completed, preserving order)` equals `progress.queue` exactly | Auto-fire `/mo-apply-impact` |
+| **Row B — post-finish housekeeping recovery:** active is null AND queue empty AND no `[x] TODO` AND no `[ ] TODO` AND `progress.completed` non-empty AND `blueprints/history/v[N]/reason.md.kind == "completion"` for `completed[-1]` AND `quest/active.md.status == "active"` | Auto-fire `/mo-complete-workflow` (short-circuits to its Branch I — Step 7 housekeeping only) |
+| `queue_count == 0` and no `[x] TODO` lines (catch-all) | Delegate to `/mo-resume-workflow` |
 
 **Active cases (`active_feature != "null"`):**
 
@@ -56,6 +61,7 @@ sub_flow="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get sub-flow)"
 | 3             | (any)         | Post-chain resume (see Resume Handler below)                  |
 | 5             | (any)         | Overseer-review received (see Overseer Handler below)         |
 | 6             | reviewing     | Post-review-session resume (see Review-Resume Handler below)  |
+| 7             | (any)         | Stage-7 finalize — auto-fire `/mo-complete-workflow` (Item 4 of v11 plan; idempotent via Branch II in mo-complete-workflow when re-entered after a partial finalize) |
 | any other     | —             | Delegate to `/mo-resume-workflow` for state diagnosis         |
 
 For the "any other" case (active or pre-flight), invoke `/mo-resume-workflow` and stop — let it report state and recommend the next command.
@@ -90,25 +96,66 @@ Reached when the overseer has just finished marking items (`[x] TODO` lines exis
 4. **Analyze codebase for cross-feature dependencies.** For ≥ 2 features in the queue, do a bounded inspection (grep for cross-feature imports, references in shared modules) to surface ordering hints. Skip when there's only one feature.
 5. **Propose the prioritized order.** Print the order as a numbered list and the dependency reasoning underneath. End the message with:
    > "Reply `/mo-continue` to accept this order, or paste a different order (one feature per line) and then `/mo-continue` to confirm."
-6. **Stop.** Do NOT write `queue-rationale.md` yet — that lands in Step 2B after the overseer confirms.
+6. **Mid-cycle re-entry only — append a draft batch to `queue-rationale.md` (Item 7 of the v11 plan).** When this Step 2A run is the mid-cycle re-entry path (queue was empty + we just re-populated via `enqueue`), `queue-rationale.md` already exists from the prior cycle's batches and its top-level `status` is `confirmed`. Append a new `## Batch <N+1> — <today>` body with the proposed order in `### Order` (and `### Dependencies`/`### Notes` if applicable). Refresh top-level frontmatter atomically with the body write: `batch: N+1`, `status: draft`, `features: <previous confirmed cumulative + proposed order for new batch>`. This makes the next `/mo-continue` route to the draft-confirmation row in the dispatcher (Item 5) → Step 2B (extended) for confirmation.
+
+   ```bash
+   if [[ -f "$qr_file" && "$(frontmatter.sh get "$qr_file" status 2>/dev/null || echo confirmed)" == "confirmed" ]]; then
+     # Determine N from the highest matched ## Batch <N> heading via the pinned regex
+     # ^## Batch (\d+)\b. Files without batch headers are treated as implicit Batch 1.
+     # Append ## Batch <N+1> — <today> + ### Order/Dependencies/Notes via Edit.
+     # Then update top-level frontmatter:
+     #   $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh set "$qr_file" batch <N+1>
+     #   $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh set "$qr_file" status draft
+     #   $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh set "$qr_file" features '[<cumulative>]'
+   fi
+   ```
+7. **Stop.** Do NOT auto-fire Step 2B from here — the draft batch needs the overseer's explicit confirmation. The dispatcher routes the next `/mo-continue` to Step 2B (extended) automatically because top-level `status` is now `draft`.
+
+   For the **initial cycle** (queue was already seeded by `/mo-run`, no prior batches exist): skip the file write here and let Step 2B's case (a) write the file from scratch when the overseer confirms. (This preserves the current behavior for fresh cycles.)
 
 ### Pre-flight Step 2B — Confirm order + auto-fire `/mo-apply-impact`
 
-Reached when `[x] TODO` lines have been promoted (none remain) but `queue-rationale.md` is missing — i.e., the overseer is responding to Step 2A's proposal.
+Reached when `[x] TODO` lines have been promoted (none remain) AND either (a) `queue-rationale.md` is missing OR (b) `queue-rationale.md` is present with `status: draft`. Item 5 of the v11 plan extends Step 2B to handle both cases — they share the prompt logic, the order-validation, the `progress.sh reorder` call, and the auto-fire of `/mo-apply-impact`. They diverge only at the file-write step (init vs. targeted edit).
 
-1. **Resolve the confirmed order.** If the overseer typed a custom order in the previous turn, parse it. Otherwise, use the proposal from Step 2A (which the millwright still has in conversation context — if the session was compacted, re-derive it by re-grouping PENDING items + re-running dependency analysis).
+**Detect entry condition:**
+
+```bash
+quest_dir="$($CLAUDE_PLUGIN_ROOT/scripts/quest.sh dir)"
+qr_file="$quest_dir/queue-rationale.md"
+if [[ -f "$qr_file" ]]; then
+  qr_status="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$qr_file" status 2>/dev/null || echo 'confirmed')"
+  qr_batch="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$qr_file" batch 2>/dev/null || echo '1')"
+else
+  qr_status="missing"
+  qr_batch="0"
+fi
+```
+
+1. **Resolve the confirmed order.** If the overseer typed a custom order in the previous turn, parse it. Otherwise, use the proposal from Step 2A (which the millwright still has in conversation context — if the session was compacted, re-derive it by re-grouping PENDING items + re-running dependency analysis). For the draft case (b), the proposal lives in the latest batch's `### Order` body and in top-level `features:` (the suffix corresponding to the draft batch).
 2. **Validate the order.** It must be a permutation of the current `progress.md` queue. If the overseer's custom order is malformed (extras, missing entries, duplicates), surface the error and ask them to retype.
-3. **Write the cycle's `queue-rationale.md`.** Same recipe as `mo-run.md` Step 6 — paths resolve through the active-quest pointer:
+3. **Write the cycle's `queue-rationale.md`.** Two sub-paths:
+
+   **(a) Missing — write a fresh file** (current behavior):
+
    ```bash
-   quest_dir="$($CLAUDE_PLUGIN_ROOT/scripts/quest.sh dir)"
    todo_list_id="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get \
      "$quest_dir/todo-list.md" id)"
    $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh init queue-rationale \
-     "$quest_dir/queue-rationale.md" \
+     "$qr_file" \
      "TODO_LIST_ID=$todo_list_id" \
      "FEATURES=<comma-joined confirmed order>"
    ```
-   Then fill the body via `Edit` per the template's section guide (`## Order`, `## Dependencies`, `## Notes`).
+
+   Then fill the body via `Edit` per the template's section guide (one `## Batch 1 — <date>` section with `### Order`, `### Dependencies`, `### Notes`). Top-level `status` and `batch` may be omitted (schema defaults handle them as `confirmed`/`1`).
+
+   **(b) Draft — targeted edit of the existing file** (Item 7 + Item 5 extension):
+
+   - Update only the **latest batch's** `### Order / ### Dependencies / ### Notes` body to reflect the confirmed order and reasoning. Do NOT add a new batch (Item 7 reserves the append step for Step 2A); do NOT rewrite earlier batch bodies (audit history).
+   - Refresh top-level `features:` to the cumulative ordered list across all batches (previous confirmed batches' features in order, plus the just-confirmed latest batch's features). Use `mo_fm_set` (via `frontmatter.sh set`) to preserve the rest of the frontmatter.
+   - Set top-level `batch:` to the latest batch number (`qr_batch`).
+   - Flip top-level `status:` from `draft` to `confirmed`.
+   - **Load-bearing invariant:** after Step 2B returns, `queue-rationale.md.features - progress.completed` must equal `progress.queue` in order, or Row A will not fire between features. Verify this before the auto-fire below.
+
 4. **Reorder the queue.**
    ```bash
    $CLAUDE_PLUGIN_ROOT/scripts/progress.sh reorder <feature1> <feature2> ...
@@ -123,14 +170,32 @@ Runs after the overseer has reviewed the blueprint files (`requirements.md`, `co
 
 ### Approve Step 1 — Sanity-check blueprint files
 
+Use `blueprints.sh check-current` (default mode — `primer.md` is not expected until stage 3) so partial stage-2 generations cannot slip through to `/mo-plan-implementation` with an incomplete blueprint:
+
 ```bash
-data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
-bp_dir="$data_root/workflow-stream/$active_feature/blueprints/current"
-for f in "$bp_dir/requirements.md" "$bp_dir/config.md"; do
-  [[ -f "$f" ]] || { echo "error: missing $f — run /mo-apply-impact first" >&2; exit 1; }
-done
-[[ -d "$bp_dir/diagrams" ]] || { echo "error: missing $bp_dir/diagrams/ — run /mo-apply-impact first" >&2; exit 1; }
+if "$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh" check-current "$active_feature"; then
+  current_status=0
+else
+  current_status=$?
+fi
+case "$current_status" in
+  0) ;;  # stage-2 blueprint is complete; proceed to /mo-plan-implementation
+  1)
+    echo "error: blueprints/current is empty for $active_feature; run /mo-apply-impact first" >&2
+    exit 1
+    ;;
+  2)
+    echo "error: blueprints/current is partial or invalid for $active_feature; repair it or re-run /mo-apply-impact before approving" >&2
+    exit 1
+    ;;
+  *)
+    echo "error: check-current returned unexpected status $current_status" >&2
+    exit 1
+    ;;
+esac
 ```
+
+The default mode is correct here: `primer.md` is written at stage 3 by `/mo-plan-implementation` Step 3.5, so it does not exist yet at the stage-2 approve gate. Stage-3+ callers (`/mo-update-blueprint`, the Stage-4 drift probe, `/mo-complete-workflow` before completion rotation) use `--require-primer` to also validate the primer.
 
 ### Approve Step 2 — Auto-fire `/mo-plan-implementation`
 
@@ -148,21 +213,263 @@ If `mo-plan-implementation` errors (branch missing, branch mismatch, etc.), rela
 
 Runs after the brainstorming chain has fully exited and returned control. Generates implementation diagrams (with pre-existing system framed as shaded context), optionally rotates the blueprint if requirements changed during brainstorming, and hands off to the overseer for review.
 
-### Resume Step 1 — Mark sub-flow
+The handler is structured so re-runs after a session break are safe (Item 1 of the v11 progress-gap plan). All state writes are atomic, and a Step 0 drift-completion probe detects "drift was successfully completed in this cycle but the marker write was lost" without re-prompting the overseer.
+
+### Resume Step 0 — Drift-completion probe (closes F1)
+
+Skipped when `active.drift-check-completed` is already true (probe is gated to one-shot per cycle). Detects the case where `/mo-update-blueprint` rotated and regenerated successfully but the subsequent marker-set was lost to a session break — without this probe, the next `/mo-continue` would re-prompt the overseer for a drift decision they already answered.
 
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "sub-flow=resuming"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+hist="$data_root/workflow-stream/$active_feature/blueprints/history"
+
+drift_marker="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get drift-check-completed 2>/dev/null || echo 'false')"
+
+# Helper: highest finalized v[N] for active.feature.
+latest_finalized_v() {
+  ls -d "$hist"/v[0-9]* 2>/dev/null \
+    | grep -vE '\.(partial|partial\.tmp)$' \
+    | sed -n 's|.*/v\([0-9]\+\)$|\1|p' \
+    | sort -n | tail -1
+}
+
+# Helper: highest finalized v[K]>baseline whose reason.kind == "spec-update". Empty if none.
+spec_update_after() {
+  local baseline="$1"
+  local v
+  for d in "$hist"/v[0-9]*; do
+    [[ -d "$d" ]] || continue
+    [[ "$d" == *.partial || "$d" == *.partial.tmp ]] && continue
+    v="${d##*/v}"
+    [[ "$v" =~ ^[0-9]+$ ]] || continue
+    [[ "$v" -le "$baseline" ]] && continue
+    local kind
+    kind="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$d/reason.md" kind 2>/dev/null || echo "")"
+    if [[ "$kind" == "spec-update" ]]; then
+      echo "$v"
+      return 0
+    fi
+  done
+  echo ""
+}
+
+# Helper: most recent partial directory's reason kind, or empty.
+single_partial() {
+  local matches
+  matches=$(ls -d "$hist"/v[0-9]*.partial 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$matches" == "1" ]]; then
+    ls -d "$hist"/v[0-9]*.partial 2>/dev/null
+  fi
+}
+
+if [[ "$drift_marker" != "true" ]]; then
+  baseline_str="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get history-baseline-version 2>/dev/null || echo 'null')"
+
+  if [[ "$baseline_str" == "null" || -z "$baseline_str" ]]; then
+    # Unknown baseline (older in-flight cycle, or Step 3 was partial). Do NOT
+    # infer drift from old history; first ensure current/ is structurally
+    # complete, then capture a fresh baseline and skip the probe for this
+    # invocation.
+    if "$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh" check-current --require-primer "$active_feature"; then
+      cc_status=0
+    else
+      cc_status=$?
+    fi
+    if [[ "$cc_status" != "0" ]]; then
+      # current/ is empty or partial — recovery required. Determine the kind to
+      # invoke /mo-update-blueprint with: prefer the partial's reason.kind,
+      # otherwise the latest finalized v[N]/reason.md.kind. GUARD the value to
+      # {manual, spec-update}; other kinds are owned by other commands.
+      partial_dir="$(single_partial)"
+      recovered_kind=""
+      recovered_summary=""
+      if [[ -n "$partial_dir" && -f "$partial_dir/reason.md" ]]; then
+        recovered_kind="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$partial_dir/reason.md" kind 2>/dev/null || echo "")"
+        recovered_summary="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$partial_dir/reason.md" summary 2>/dev/null || echo "")"
+      else
+        latest_v_for_kind="$(latest_finalized_v)"
+        if [[ -n "$latest_v_for_kind" ]]; then
+          recovered_kind="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$hist/v${latest_v_for_kind}/reason.md" kind 2>/dev/null || echo "")"
+          recovered_summary="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$hist/v${latest_v_for_kind}/reason.md" summary 2>/dev/null || echo "")"
+        fi
+      fi
+
+      case "$recovered_kind" in
+        manual|spec-update)
+          /mo-update-blueprint --reason-kind="$recovered_kind" "${recovered_summary:-recovery}"
+          if [[ "$recovered_kind" == "spec-update" ]]; then
+            $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "drift-check-completed=true"
+            echo "Step 0: lazy-baseline recovery succeeded for spec-update; drift marker set. Re-run /mo-continue to advance."
+            exit 0
+          else
+            # Manual recovery: capture fresh baseline, let the normal drift prompt run later in this invocation.
+            baseline_after_recovery="$(latest_finalized_v)"; baseline_after_recovery="${baseline_after_recovery:-0}"
+            $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "history-baseline-version=$baseline_after_recovery"
+          fi
+          ;;
+        completion)
+          echo "error: a 'completion' partial blocks drift recovery — this state is owned by /mo-complete-workflow's Branch 0a, not /mo-update-blueprint. Invoke /mo-complete-workflow to resume the in-flight stage-8 rotation, or /mo-resume-workflow for diagnosis." >&2
+          exit 1
+          ;;
+        re-spec-cascade|re-plan-cascade)
+          echo "error: a '$recovered_kind' partial blocks drift recovery — these are review-loop auto-trigger rotations; their resume path is via /mo-review (re-launch the brainstorming review session) which lets the chain's next rotation attempt resume the partial. /mo-update-blueprint cannot recover this kind. No state was modified." >&2
+          exit 1
+          ;;
+        *)
+          echo "error: cannot determine a safe recovery kind for current/ in this state. Run /mo-resume-workflow for diagnosis." >&2
+          exit 1
+          ;;
+      esac
+    else
+      # current/ is complete: just capture a fresh baseline and skip the probe for this invocation.
+      baseline_capture="$(latest_finalized_v)"; baseline_capture="${baseline_capture:-0}"
+      $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "history-baseline-version=$baseline_capture"
+      echo "Step 0: lazy baseline capture (=$baseline_capture). Probe disabled for this invocation; the normal drift prompt may run."
+    fi
+  else
+    # Known baseline — walk K > baseline for kind=spec-update.
+    drift_done_v="$(spec_update_after "$baseline_str")"
+    if [[ -n "$drift_done_v" ]]; then
+      if "$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh" check-current --require-primer "$active_feature"; then
+        cc_status=0
+      else
+        cc_status=$?
+      fi
+      if [[ "$cc_status" == "0" ]]; then
+        # Drift rotated + regenerated successfully — only the marker write was lost. Persist it.
+        $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "drift-check-completed=true"
+        echo "Step 0: detected this-cycle spec-update at v${drift_done_v} with complete current/; persisted drift marker. Drift prompt will be skipped."
+      else
+        # Drift rotation started but regeneration is partial. Route to /mo-update-blueprint recovery.
+        # The recovery loop note: when check-current==2, /mo-update-blueprint will refuse without
+        # --force-regen and the workflow will keep landing on this same diagnostic until the
+        # overseer intervenes. This is intentional (auto-firing --force-regen would discard
+        # partial overseer-visible content without consent — which is what F2 closes).
+        v_summary="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$hist/v${drift_done_v}/reason.md" summary 2>/dev/null || echo 'recovery')"
+        echo "Step 0: detected this-cycle spec-update at v${drift_done_v} but current/ is incomplete (check-current=$cc_status). Routing to /mo-update-blueprint recovery."
+        echo "Note: if /mo-update-blueprint refuses (partial state without --force-regen), the workflow will not progress until you repair current/ manually OR re-run /mo-update-blueprint --force-regen <reason>. This is intentional — see F2/Item 10 in the v11 plan."
+        /mo-update-blueprint --reason-kind=spec-update "$v_summary"
+        $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "drift-check-completed=true"
+      fi
+    fi
+    # If no spec-update v > baseline, drift hasn't run yet in this cycle — let the normal Step 3 prompt fire.
+  fi
+fi
 ```
 
-### Resume Step 2 — Verify the chain produced commits
+### Resume Step 1 — Verify the chain produced commits (zero-commit branch)
 
 ```bash
 base_commit="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get base-commit)"
 commit_count="$(git rev-list --count "$base_commit..HEAD")"
-(( commit_count > 0 )) || { echo "error: no commits since base-commit; the chain did not produce implementation. Make sure the brainstorming chain has fully exited (its final step asks for approval) before running /mo-continue." >&2; exit 1; }
+```
+
+**If `commit_count > 0`:** proceed to Step 2 (the normal flow).
+
+**If `commit_count == 0`:** the chain produced no commits since `base-commit`. Three legitimate causes — prompt the overseer:
+
+> "Stage 4 — no commits since `base-commit` (`$base_commit`). The brainstorming chain (or direct implementation) hasn't produced code yet. Reply:
+>
+>   - `retry-launch` — re-launch `/mo-plan-implementation` (the chain may have exited prematurely or the direct-implementation session was interrupted before any commits landed). Stage stays at 3.
+>   - `direct-empty` — confirm that **no code changes were needed** (e.g., a config-only feature whose blueprint was already correct, or a feature that turned out to already be implemented). I'll skip diagram generation + change-summary regeneration, write a tagged HTML comment into `overseer-review.md` documenting why, mark the cycle as drift-check-complete (no drift to detect — there's nothing to compare), and advance directly to stage 5 (overseer review). You can still write findings if you disagree with the no-changes conclusion.
+>   - `abort` — invoke `/mo-abort-workflow` to clean up state."
+
+```bash
+if (( commit_count == 0 )); then
+  case "$zero_commit_reply" in
+    retry-launch)
+      echo "Zero-commit branch: re-launching /mo-plan-implementation."
+      /mo-plan-implementation
+      exit 0  # mo-plan-implementation handles the rest; overseer types /mo-continue when ready
+      ;;
+    direct-empty)
+      # Direct-empty side-effect contract (Item 3 of v11 plan).
+      # 1. Skip /mo-draw-diagrams entirely (no commits, nothing to diagram).
+      # 2. Skip implementation/change-summary.md regeneration.
+      # 3. Create/validate the overseer-review.md skeleton idempotently.
+      data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+      ov_file="$data_root/workflow-stream/$active_feature/implementation/overseer-review.md"
+      [[ -f "$ov_file" ]] || $CLAUDE_PLUGIN_ROOT/scripts/review.sh init "$active_feature"
+      $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh validate "$ov_file" review-file >/dev/null
+
+      # Insert the direct-empty HTML comment ONCE, immediately after the frontmatter
+      # block and before any markdown heading. review.sh canonicalize explicitly
+      # skips HTML comments (scripts/review.sh:246-253), so this comment will not
+      # be misclassified as a free-form finding. Do NOT use plain "## No code
+      # changes" prose here — that would trip canonicalize.
+      python3 - "$ov_file" "$direct_empty_reason" <<'PYEOF'
+import re, sys
+path, reason = sys.argv[1], sys.argv[2] or "not provided"
+with open(path) as f:
+    content = f.read()
+marker = "<!-- direct-empty cycle"
+if marker in content:
+    sys.exit(0)  # already added; idempotent
+m = re.match(r'^(---\n.*?\n---\n)(.*)$', content, re.DOTALL)
+fm_block = m.group(1) if m else ""
+body = m.group(2) if m else content
+note = (
+    f"\n<!-- direct-empty cycle (planning-mode=direct, zero commits in "
+    f"base-commit..HEAD).\n"
+    f"     The overseer reported during stage 4 that no code changes were needed.\n"
+    f"     Reason: {reason}.\n"
+    f"     Approve with no findings to advance, or write findings under\n"
+    f"     \"## Implementation Review\" if you disagree. -->\n"
+)
+with open(path, 'w') as f:
+    f.write(fm_block + note + body)
+PYEOF
+
+      # 4. Standalone flag writes — drift-check-completed=true skips the drift
+      # prompt entirely (no drift to detect when there are zero commits).
+      $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set \
+        "implementation-completed=true" \
+        "drift-check-completed=true" \
+        "execution-mode=inline" \
+        "sub-flow=resuming"
+
+      # 5. Final atomic advance-to 3 → 5.
+      $CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance-to 3 5 --set sub-flow=none
+
+      # 6. Hand off at stage 5.
+      echo "Direct-empty cycle for '$active_feature' — advanced to stage 5. Review overseer-review.md (the HTML comment documents the reason); type /mo-continue when ready."
+      exit 0
+      ;;
+    abort)
+      /mo-abort-workflow
+      exit 0
+      ;;
+    *)
+      echo "error: zero-commit branch requires reply of 'retry-launch', 'direct-empty', or 'abort'." >&2
+      exit 1
+      ;;
+  esac
+fi
 ```
 
 In the happy path, the mo-workflow does **not** track or read the spec / plan files the chain produced under `docs/superpowers/` — those are the chain's own artefacts and `base-commit..HEAD` is the canonical implementation contract. Step 2.5 below is the single exception: when commits exist *and* a plan file from this chain run is detected, the handler reads the plan/spec **read-only** to compose a resume primer if the overseer reports the chain was interrupted mid-run.
+
+### Resume Step 2 — Mark sub-flow + idempotent flag writes
+
+Atomic batched write — these flags are idempotent on retry:
+
+```bash
+# Prompt for execution-mode only when not yet persisted (a prior partial run
+# may have already chosen). Otherwise reuse the persisted value.
+mode_persisted="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get execution-mode 2>/dev/null || echo 'none')"
+if [[ "$mode_persisted" == "none" ]]; then
+  # Prompt the overseer (subagent-driven|inline). The exact prompt text lives
+  # in Resume Step 3 below for narrative continuity.
+  mode="$mode_from_overseer"  # placeholder; the LLM following this recipe asks the overseer.
+else
+  mode="$mode_persisted"
+fi
+
+$CLAUDE_PLUGIN_ROOT/scripts/progress.sh set \
+  "implementation-completed=true" \
+  "execution-mode=$mode" \
+  "sub-flow=resuming"
+```
 
 ### Resume Step 2.5 — Confirm chain completion (abandoned-chain recovery)
 
@@ -264,49 +571,74 @@ A session that was closed mid-chain looks identical to a clean exit at this poin
 
    After invoking the Skill, **stop here**. Do NOT advance the stage. Do NOT mark `implementation-completed`. The stage stays at 3, sub-flow at `chain-in-progress`. The overseer drives the chain to completion (same isolation model as the original stage-3 launch); when it finishes, they type `/mo-continue` and this handler runs again, this time routing to `completed` (or back through Step 2.5 if the second run was also interrupted).
 
-### Resume Step 3 — Mark implementation completed and advance
+### Resume Step 3 — Drift prompt (skipped when probe set the marker)
 
-Idempotent: if `current-stage` is already past 3 from a prior partial run, skip `advance` (the script will reject a stage mismatch).
+(Skipped when `active.drift-check-completed` was set true by Step 0's probe.)
 
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "implementation-completed=true"
-
-current_stage="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get current-stage)"
-if (( current_stage == 3 )); then
-  # Prompt the overseer for execution-mode if unknown, then:
-  $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "execution-mode=<subagent-driven|inline>"
-  $CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 3
+drift_marker_now="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get drift-check-completed 2>/dev/null || echo 'false')"
+if [[ "$drift_marker_now" != "true" ]]; then
+  # Existing overseer prompt and dispatch lives below in "Resume Step 4 — Blueprint drift check".
+  drift_prompt_required=1
+else
+  echo "Resume Step 3: drift marker already true (set by Step 0 probe); skipping drift prompt."
+  drift_prompt_required=0
 fi
 ```
 
 ### Resume Step 4 — Blueprint drift check (overseer-driven)
 
+(Skipped when `drift_prompt_required==0`, i.e., the Step 0 probe already set the marker for this cycle.)
+
 Brainstorming may have surfaced new requirements, dropped some, or shifted scope mid-session. Without inspecting the chain's spec/plan files (mo-workflow doesn't read those), the overseer is the authority on whether `blueprints/current/requirements.md` still matches what was actually built.
 
-Prompt the overseer:
+When `drift_prompt_required==1`, prompt the overseer:
 
 > "Stage-4 drift check: did anything in the requirements change during brainstorming? Reply:
 >
->   - `<short reason>` — I'll run `/mo-update-blueprint <reason>` to rotate `blueprints/current/` into history and regenerate `requirements.md` / `config.md` / `diagrams/` from the **implementation** (codebase + `base-commit..HEAD` diff) plus the just-rotated history version. The previous blueprint's `todo-item-ids`, `## Planned`, `## Non-goals`, `## GIT BRANCH`, and `## Overseer Additions` are preserved verbatim. The active quest cycle's `todo-list.md` and `summary.md` (under `quest/<slug>/`) and `journal/` are NOT consulted.
+>   - `<short reason>` — I'll run `/mo-update-blueprint --reason-kind=spec-update <reason>` to rotate `blueprints/current/` into history and regenerate `requirements.md` / `config.md` / `diagrams/` from the **implementation** (codebase + `base-commit..HEAD` diff) plus the just-rotated history version. The previous blueprint's `todo-item-ids`, `## Planned`, `## Non-goals`, `## GIT BRANCH`, and `## Overseer Additions` are preserved verbatim. The active quest cycle's `todo-list.md` and `summary.md` (under `quest/<slug>/`) and `journal/` are NOT consulted.
 >   - `continue` — proceed without updating the blueprint. Any drift will surface as findings during overseer review.
 >
 > Skipping is fine — the review loop catches drift via `re-spec` / `re-plan` findings if needed."
 
-If the overseer replies with a reason, invoke `/mo-update-blueprint "<reason>"`. The blueprint command handles rotation, regeneration, and `review.sh sync-refs`. Otherwise (`continue` or any non-reason reply), proceed.
+```bash
+if [[ "${drift_prompt_required:-0}" == "1" ]]; then
+  # Wait for the overseer's reply, captured into $drift_reply by the LLM.
+  if [[ "$drift_reply" != "continue" && -n "$drift_reply" ]]; then
+    # Drift side effect: invoke /mo-update-blueprint with --reason-kind=spec-update.
+    # The --reason-kind=spec-update tag is what makes the Step 0 probe detect this
+    # cycle's drift on retry (it walks history versions K > history-baseline-version
+    # for kind=spec-update).
+    /mo-update-blueprint --reason-kind=spec-update "$drift_reply"
+  fi
+  # Split marker write — runs whether the overseer continued or supplied a reason.
+  # Splitting it from the side effect closes F1 (a session break between
+  # /mo-update-blueprint's return and this line is recovered by the Step 0 probe
+  # on the next /mo-continue).
+  $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "drift-check-completed=true"
+fi
+```
 
 ### Resume Step 5 — Generate implementation diagrams
 
 Run `/mo-draw-diagrams` (the user-facing wrapper around `mo-generate-implementation-diagrams`). The command renders the diagram set of `base-commit..HEAD` into `implementation/diagrams/`, framing pre-existing participants/classes/flows as shaded context next to the new functionality.
 
-### Resume Step 6 — Create overseer-review skeleton and hand off
+### Resume Step 6 — Create overseer-review skeleton
 
-Initialize the overseer-review skeleton (idempotent — `review.sh init` refuses to overwrite, so skip the call if the file already exists), then advance 4 → 5:
+Initialize the overseer-review skeleton (idempotent — `review.sh init` refuses to overwrite, so skip the call if the file already exists). The stage advance is deferred to Step 7 so the whole resume sequence finalizes atomically.
 
 ```bash
 data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
 ov_file="$data_root/workflow-stream/$active_feature/implementation/overseer-review.md"
 [[ -f "$ov_file" ]] || $CLAUDE_PLUGIN_ROOT/scripts/review.sh init "$active_feature"
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 4
+```
+
+### Resume Step 7 — Final atomic advance-to (3 → 5, sub-flow=none)
+
+The Resume Handler eliminates stage 4 as a persisted state. The atomic `advance-to 3 5 --set sub-flow=none` collapses the old "advance 3 then advance 4" pair into a single transition, so a session break inside the handler can never strand the workflow at stage 4 with sub-flow=resuming.
+
+```bash
+$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance-to 3 5 --set sub-flow=none
 ```
 
 Tell the overseer:
@@ -386,10 +718,12 @@ open_ids="$($CLAUDE_PLUGIN_ROOT/scripts/review.sh list-open "$active_feature")"
 If `open_ids` is empty:
 
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "overseer-review-completed=true"
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 5
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 6
+$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance-to 5 7 \
+  --set sub-flow=none \
+  --set overseer-review-completed=true
 ```
+
+The single `advance-to 5 7 --set ...` collapses the no-findings approve path's stage advances and the `overseer-review-completed=true` write into one atomic transition (Item 4 of the v11 plan). A session break inside this block can never strand the workflow at stage 6 with sub-flow=none — either everything lands or nothing does.
 
 Tell the overseer: "Approved — no findings. Auto-finalizing via `/mo-complete-workflow`."
 
@@ -441,14 +775,9 @@ If `remaining_open` is non-empty, the review session ended without resolving eve
 - **On `abandoned`** — invoke `/mo-review` (which reads the open findings, prompts for a review-mode, and re-launches the loop) and **stop**. Do NOT advance past stage 6. The next `/mo-continue` after the new session exits will re-enter this handler.
 - **On `abort`** — invoke `/mo-abort-workflow` and stop.
 
-### Review-Resume Step 2 — Mark complete and advance
+### Review-Resume Step 2 — (deferred to Step 2.6 finalize)
 
-```bash
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh set \
-  "sub-flow=none" \
-  "overseer-review-completed=true"
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 6
-```
+`sub-flow=reviewing` stays in place until after the diagram-refresh prompt at Step 2.5 (Item 4 of the v11 plan). This makes the refresh prompt re-fireable on retry — if a session break happens between "overseer answered the prompt" and "rotation finalized," the next `/mo-continue` re-enters this handler and re-prompts (the overseer can answer the same way; the prompt is idempotent because no state changed yet).
 
 ### Review-Resume Step 2.5 — Offer diagram refresh
 
@@ -470,7 +799,17 @@ Prompt the overseer:
 >
 > (y/n)"
 
-Skip the prompt entirely when `new_since_diagrams == 0` (no review-loop commits — diagrams are already current). On `y`, invoke `/mo-draw-diagrams` and continue. On `n`, continue. Either way, fall through to Step 3.
+Skip the prompt entirely when `new_since_diagrams == 0` (no review-loop commits — diagrams are already current). On `y`, invoke `/mo-draw-diagrams` and continue. On `n`, continue. Either way, fall through to Step 2.6.
+
+### Review-Resume Step 2.6 — Atomic finalize (advance-to 6 → 7)
+
+After the refresh prompt has been answered (or skipped), finalize the review-resume sequence in one atomic write. This collapses the old "set sub-flow=none + set overseer-review-completed=true + advance 6" trio into a single transition (Item 4 of the v11 plan), so a session break here cannot strand the workflow at stage 6 with sub-flow=none and the marker only half-set.
+
+```bash
+$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance-to 6 7 \
+  --set sub-flow=none \
+  --set overseer-review-completed=true
+```
 
 ### Review-Resume Step 3 — Auto-fire /mo-complete-workflow
 

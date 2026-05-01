@@ -22,12 +22,47 @@ Because stage 3 has several non-trivial side effects (todos → IMPLEMENTING, `b
 
 ## Execution
 
-### Step 1 — Determine the active feature
+### Step 1 — Determine the active feature and check for re-entry
 
 ```bash
 active_feature="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get-active)"
 [[ -n "$active_feature" && "$active_feature" != "null" ]] || {
   echo "error: no active feature — run /mo-apply-impact first" >&2; exit 1; }
+
+current_stage="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get current-stage)"
+sub_flow="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get sub-flow)"
+base_commit_persisted="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get base-commit 2>/dev/null || echo 'null')"
+```
+
+**Re-entry guard (Item 3 of the v11 plan).** If `current-stage == 3` and `sub-flow` is `chain-in-progress` or `resuming`, this is a re-entry into stage 3 (the chain was previously launched and the overseer is re-running this command for recovery). Validate `primer.md` and the planning-mode persistence; do NOT re-capture `base-commit` or `history-baseline-version`.
+
+```bash
+re_entry=0
+if [[ "$current_stage" == "3" && ( "$sub_flow" == "chain-in-progress" || "$sub_flow" == "resuming" ) ]]; then
+  re_entry=1
+  echo "Re-entry into stage 3 detected (sub-flow=$sub_flow). Validating primer.md; preserving base-commit and history-baseline-version."
+  # primer.md validation happens in Step 3.5; if missing/incomplete, regenerate.
+  planning_mode_persisted="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get planning-mode 2>/dev/null || echo 'none')"
+  base_commit_for_check="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get base-commit 2>/dev/null || echo '')"
+  commit_count_since_base=0
+  if [[ -n "$base_commit_for_check" && "$base_commit_for_check" != "null" ]]; then
+    commit_count_since_base="$(git rev-list --count "$base_commit_for_check..HEAD" 2>/dev/null || echo 0)"
+  fi
+  # Skip the planning-mode prompt iff already persisted AND the chain produced commits.
+  if [[ "$planning_mode_persisted" != "none" && "$commit_count_since_base" -gt 0 ]]; then
+    skip_planning_prompt=1
+    echo "planning-mode already persisted as '$planning_mode_persisted' and base-commit..HEAD has $commit_count_since_base commits — skipping planning-mode prompt on re-entry."
+  fi
+fi
+```
+
+**Legacy/partial stage-3 launch state.** If `active.current-stage == 2` but `base-commit != null`, the previous Step 3 wrote its state but did not advance. Do not recapture `base-commit` or `history-baseline-version`; finish the stage-3 launch by validating `primer.md` (regenerate via Step 3.5 if needed) and then advancing 2 → 3.
+
+```bash
+if [[ "$current_stage" == "2" && "$base_commit_persisted" != "null" && -n "$base_commit_persisted" ]]; then
+  echo "Detected legacy/partial stage-3 launch state (current-stage=2 but base-commit=$base_commit_persisted). Skipping base-commit + baseline capture; will validate primer.md and advance 2 → 3."
+  legacy_partial_launch=1
+fi
 ```
 
 ### Step 2 — Resolve and validate the primary branch from `config.md`
@@ -100,15 +135,43 @@ Surface these errors to the overseer as readable messages (not raw stderr) befor
 $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set "branch=$primary_branch"
 ```
 
-### Step 3 — Transition todos and record base commit
+### Step 3 — Transition todos and record base commit + history baseline
+
+(On re-entry, this whole step is skipped — the previously-captured `base-commit` and `history-baseline-version` are preserved. On legacy/partial-launch detection, the Step 3 capture is skipped but the advance 2 → 3 still runs.)
 
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/todo.sh bulk-transition PENDING IMPLEMENTING --feature "$active_feature"
-base_commit="$(git rev-parse HEAD)"
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh set \
-  "base-commit=$base_commit" \
-  "sub-flow=chain-in-progress"
-$CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 2
+if [[ "${re_entry:-0}" == "0" && "${legacy_partial_launch:-0}" == "0" ]]; then
+  $CLAUDE_PLUGIN_ROOT/scripts/todo.sh bulk-transition PENDING IMPLEMENTING --feature "$active_feature"
+  base_commit="$(git rev-parse HEAD)"
+
+  # Capture history-baseline-version: the highest finalized v[N] index for this
+  # feature at stage-3 entry. The Stage-4 drift-completion probe (Item 1 of the
+  # v11 plan) walks history versions K > baseline for kind=spec-update to detect
+  # "this cycle's drift fired but the marker write was lost." Capturing 0 when
+  # no history exists is correct (the probe treats null/missing as "unknown",
+  # which is a different state — see Item 1's back-compat guard).
+  data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+  history_dir="$data_root/workflow-stream/$active_feature/blueprints/history"
+  baseline=0
+  if compgen -G "$history_dir/v*" >/dev/null 2>&1; then
+    baseline_str="$(ls -d "$history_dir"/v[0-9]* 2>/dev/null \
+      | grep -vE '\.(partial|partial\.tmp)$' \
+      | sed -n 's|.*/v\([0-9]\+\)$|\1|p' \
+      | sort -n | tail -1)"
+    [[ -n "$baseline_str" ]] && baseline="$baseline_str"
+  fi
+
+  # Atomic batched write: base-commit + sub-flow + history-baseline-version
+  # land together (or none of them, if anything in the batch fails validation).
+  $CLAUDE_PLUGIN_ROOT/scripts/progress.sh set \
+    "base-commit=$base_commit" \
+    "sub-flow=chain-in-progress" \
+    "history-baseline-version=$baseline"
+fi
+
+if [[ "${re_entry:-0}" == "0" ]]; then
+  $CLAUDE_PLUGIN_ROOT/scripts/progress.sh advance 2
+fi
 ```
 
 ### Step 3.5 — Generate `blueprints/current/primer.md`

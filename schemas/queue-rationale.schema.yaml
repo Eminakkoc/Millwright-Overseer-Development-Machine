@@ -33,6 +33,29 @@ properties:
       type: string
       pattern: "^[a-z0-9][a-z0-9-]*$"
     description: >
-      Kebab-case feature names in the priority order persisted into progress.md's
-      queue. The list MUST exactly match `progress.md.queue` after the matching
-      `progress.sh reorder` call. The body's `## Order` section mirrors this list.
+      Cumulative ordered feature list across all confirmed batches (and the
+      proposed order for the latest batch when status: draft). The dispatcher's
+      Row A (Item 5 of the v11 progress-gap plan) requires `features -
+      progress.completed` to equal `progress.queue` in order; Step 2B keeps
+      these aligned by refreshing `features` whenever the latest batch flips
+      from `draft` to `confirmed`. Step 2A appending a new batch must publish
+      the cumulative `features` and `batch: N+1`/`status: draft` in the same
+      write so the next /mo-continue routes to the draft-confirmation row.
+  status:
+    type: string
+    enum:
+      - draft
+      - confirmed
+    description: >
+      Status of the LATEST batch only (older batches' statuses live in the body
+      audit trail). Optional — missing means "confirmed" (back-compat with v10-
+      and-earlier files that pre-date the multi-batch addition). The pre-flight
+      dispatcher reads this to decide between Row A (auto-apply on confirmed)
+      and the draft-confirmation row (route to Step 2B for confirmation).
+  batch:
+    type: integer
+    minimum: 1
+    description: >
+      Latest batch number. Optional — missing means 1 (back-compat). Step 2A
+      appends `## Batch <N+1>` and writes `batch: N+1` in the same operation;
+      Step 2B refreshes this when flipping `status: draft → confirmed`.

@@ -71,9 +71,11 @@ case "$file_path" in
   */blueprints/current/requirements.md)  schema="requirements" ;;
   */blueprints/current/config.md)        schema="config" ;;
   */blueprints/current/primer.md)        schema="primer" ;;
+  */blueprints/current/diagrams/README.md) schema="diagrams-readme-blueprint" ;;
   */implementation/overseer-review.md)   schema="review-file" ;;
   */implementation/review-context.md)    schema="review-context" ;;
   */implementation/change-summary.md)    schema="change-summary" ;;
+  */implementation/diagrams/README.md)   schema="diagrams-readme-implementation" ;;
   */blueprints/history/v*/reason.md)     schema="reason" ;;
   *) exit 0 ;;  # unknown / archived mo file → skip per coverage policy
 esac

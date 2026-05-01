@@ -10,7 +10,22 @@ Audit trail for the dependency-ordering decision at stage 1.5. Persisted so the 
 
 <!-- Generated artifact — written by /mo-run Step 6 immediately before
      `progress.sh reorder`. The `features:` frontmatter is the canonical
-     priority order; it must match the queue order in `progress.md`. -->
+     priority order; it must match the queue order in `progress.md` after the
+     reorder call.
+
+     Multi-batch (Item 7 of the v11 progress-gap plan): a single cycle can
+     accumulate multiple batches over time as the overseer marks more TODO
+     items mid-cycle. Each batch is appended as a `## Batch <N> — <date>`
+     section with `### Order`, `### Dependencies`, `### Notes` sub-sections.
+     Top-level `batch:` and `status:` describe the LATEST batch only; older
+     batches' state lives only in the body audit trail. `features:` is the
+     CUMULATIVE ordered list across all batches.
+
+     Files without `## Batch <N>` headings (this template's default initial
+     write) are treated as a single implicit `## Batch 1` — back-compat with
+     v10-and-earlier files. Step 2A appending a new batch must use the
+     explicit `## Batch <N+1>` heading with level-3 sub-sections so the
+     pinned regex `^## Batch (\d+)\b` can identify them. -->
 
 ## Order
 

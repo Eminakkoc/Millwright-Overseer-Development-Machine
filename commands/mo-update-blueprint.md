@@ -1,6 +1,6 @@
 ---
 description: Rotate blueprints/current/ into history with a reason, then regenerate from the implementation (codebase + base-commit..HEAD diff) plus the previous blueprint (for non-derivable sections). Manual overseer trigger.
-argument-hint: "<reason summary>"
+argument-hint: "[--reason-kind <manual|spec-update>] [--force-regen] <reason summary>"
 ---
 
 # mo-update-blueprint
@@ -17,8 +17,11 @@ Use this command when changes discussed during brainstorming or reviews need to 
 ## Invocation
 
 ```
-/mo-update-blueprint <reason summary>
+/mo-update-blueprint [--reason-kind <kind>] [--force-regen] <reason summary>
 ```
+
+- `--reason-kind` accepts `manual` (default) or `spec-update`. The Stage-4 drift handler in `/mo-continue` invokes this command with `--reason-kind=spec-update` so the rotation history correctly records the trigger as a stage-4 drift fire instead of a manual refresh. Other rotation kinds (`completion`, `re-spec-cascade`, `re-plan-cascade`) are produced by their owning commands (`/mo-complete-workflow`, the brainstorming review session) and are not accepted here.
+- `--force-regen` discards the current `blueprints/current/` content and regenerates from the latest history version, even when `current/` is complete or partially complete. It refuses when the latest history is `completion` or a cascade (no safe parent to restore from). Used when an in-flight regeneration is corrupted and the overseer wants to start over from a known-good history snapshot. See the recovery decision tree below for the safety gates.
 
 The reason summary is a one-line free-form description of why the blueprint is being updated (e.g., `"webhook retry logic added during brainstorming"`). Required. Becomes the `summary` field of the new `history/v[N+1]/reason.md`.
 
@@ -45,31 +48,228 @@ base_commit="$($CLAUDE_PLUGIN_ROOT/scripts/progress.sh get base-commit)"
 }
 ```
 
-Reason summary comes from `$ARGUMENTS`:
+Parse `$ARGUMENTS` for the optional flags and the required reason summary:
 
 ```bash
-reason_summary="$ARGUMENTS"
+reason_kind="manual"
+force_regen=0
+positional=()
+# shellcheck disable=SC2206
+args=($ARGUMENTS)
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+  case "${args[$i]}" in
+    --reason-kind)
+      i=$((i + 1))
+      reason_kind="${args[$i]:?--reason-kind requires a value (manual|spec-update)}"
+      ;;
+    --reason-kind=*)
+      reason_kind="${args[$i]#--reason-kind=}"
+      ;;
+    --force-regen)
+      force_regen=1
+      ;;
+    *)
+      positional[${#positional[@]}]="${args[$i]}"
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+case "$reason_kind" in
+  manual|spec-update) ;;
+  *)
+    echo "error: --reason-kind must be 'manual' or 'spec-update' (got '$reason_kind'). Other kinds (completion, re-spec-cascade, re-plan-cascade) are produced by their owning commands and not accepted here." >&2
+    exit 1
+    ;;
+esac
+
+reason_summary="${positional[*]:-}"
 [[ -n "$reason_summary" ]] || {
-  echo "error: reason summary required. Usage: /mo-update-blueprint <reason summary>" >&2
+  echo "error: reason summary required. Usage: /mo-update-blueprint [--reason-kind <kind>] [--force-regen] <reason summary>" >&2
   exit 1
 }
 ```
 
-### Step 2 — Rotate blueprint to history
+### Step 1.5 — Recovery decision tree (closes F2)
+
+`/mo-update-blueprint` is a stage-3+ command, so all `check-current` calls in this command use `--require-primer`. A recovered/regenerated `current/` tree is not complete until `primer.md` has been regenerated alongside the rest.
+
+This decision tree runs **before** Step 2's rotate so a partial state from a previously-interrupted run cannot get archived into history. The tree is unconditional on partial state: even with `--force-regen`, a partial `current/` is never silently rotated. In every sub-case, `blueprints.sh rotate` is NOT called on a partial `current/`.
 
 ```bash
-version="$($CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh rotate "$active_feature" \
-  --reason-kind manual \
-  --reason-summary "$reason_summary")"
-echo "Previous blueprint archived into history/v${version}"
+data_root="$($CLAUDE_PLUGIN_ROOT/scripts/data-root.sh)"
+hist="$data_root/workflow-stream/$active_feature/blueprints/history"
+curr="$data_root/workflow-stream/$active_feature/blueprints/current"
+
+# Helper: print the single .partial directory if exactly one exists; empty otherwise.
+single_partial() {
+  local matches
+  matches=$(ls -d "$hist"/v[0-9]*.partial 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$matches" == "1" ]]; then
+    ls -d "$hist"/v[0-9]*.partial 2>/dev/null
+  fi
+}
+
+# Helper: count partial directories (both shapes).
+total_partials_count() {
+  local p t
+  p=$(ls -d "$hist"/v[0-9]*.partial 2>/dev/null | wc -l | tr -d ' ')
+  t=$(ls -d "$hist"/v[0-9]*.partial.tmp 2>/dev/null | wc -l | tr -d ' ')
+  echo $((p + t))
+}
+
+# Helper: latest finalized version + reason kind.
+latest_finalized() {
+  ls -d "$hist"/v[0-9]* 2>/dev/null \
+    | grep -vE '\.(partial|partial\.tmp)$' \
+    | sed -n 's|.*/v\([0-9]\+\)$|\1|p' \
+    | sort -n | tail -1
+}
+latest_kind() {
+  local v
+  v="$(latest_finalized)"
+  [[ -n "$v" ]] || { echo ""; return; }
+  $CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get \
+    "$hist/v${v}/reason.md" kind 2>/dev/null || echo ""
+}
+
+# Helper: run check-current --require-primer; print exit code.
+check_current_status() {
+  if "$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh" check-current --require-primer "$active_feature"; then
+    echo 0
+  else
+    echo $?
+  fi
+}
+
+# Initialize the routing flag. After this block, $skip_rotate==1 means Step 2 is skipped
+# (the recovery has already given us a $version and a current/ tree to regenerate from).
+skip_rotate=0
+
+# 1. Multiple partials → STOP unconditionally.
+if [[ "$(total_partials_count)" -gt 1 ]]; then
+  echo "error: ambiguous partial rotations under $hist (count > 1). Manual reconciliation required; no state was modified." >&2
+  exit 1
+fi
+
+# 2. Exactly one .partial: kind-matched recovery, or STOP.
+partial_dir="$(single_partial)"
+if [[ -n "$partial_dir" ]]; then
+  if [[ ! -f "$partial_dir/reason.md" ]]; then
+    echo "error: partial $partial_dir has no reason.md (old/unknown partial). No state was modified; manual cleanup required." >&2
+    exit 1
+  fi
+  partial_kind="$($CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh get "$partial_dir/reason.md" kind 2>/dev/null || echo "")"
+  if [[ "$partial_kind" != "$reason_kind" ]]; then
+    echo "error: a $partial_kind blueprint rotation is already in progress at $partial_dir." >&2
+    echo "Re-run the command that owns that reason kind, or inspect and repair the partial manually. No state was modified." >&2
+    exit 1
+  fi
+  # Resume the partial, then proceed straight to Step 4 regeneration (skip Step 2 rotate).
+  version="$($CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh resume-partial "$active_feature" --expected-kind "$reason_kind")"
+  $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+  skip_rotate=1
+  echo "Step 1.5: resumed partial → history/v${version}/; proceeding to Step 4 regeneration."
+fi
+
+# 3. No partial — examine check-current state and latest history reason kind.
+if [[ "$skip_rotate" != "1" ]]; then
+  cc_status="$(check_current_status)"
+  last_kind="$(latest_kind)"
+  latest_v="$(latest_finalized)"
+
+  if [[ "$cc_status" == "1" && ( "$last_kind" == "manual" || "$last_kind" == "spec-update" ) ]]; then
+    # Empty/scaffold-only current with a safe parent: resume regeneration without a fresh rotate.
+    $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+    version="$latest_v"
+    skip_rotate=1
+    echo "Step 1.5: check-current=1 with safe parent (kind=$last_kind); resuming regeneration from history/v${version}/."
+
+  elif [[ "$cc_status" == "2" ]]; then
+    # UNCONDITIONAL stop on partial regeneration content (closes F2).
+    if [[ "$force_regen" == "1" ]]; then
+      if [[ "$last_kind" == "manual" || "$last_kind" == "spec-update" ]]; then
+        echo "Step 1.5: --force-regen on partial state (check-current=2). Discarding current/ and regenerating from history/v${latest_v}/ (kind=$last_kind)."
+        # Empty current/ then ensure-current scaffolding.
+        if [[ -d "$curr" ]]; then
+          shopt -s dotglob nullglob
+          for entry in "$curr"/*; do rm -rf "$entry"; done
+          shopt -u dotglob nullglob
+        fi
+        $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+        version="$latest_v"
+        skip_rotate=1
+      else
+        echo "error: current/ has partial regenerated content (check-current=2) AND no manual/spec-update history version exists to restore from. Latest history is '$last_kind'." >&2
+        echo "Manual cleanup required:" >&2
+        echo "  - Inspect current/, edit it into a structurally valid state, and re-run /mo-update-blueprint <reason> normally." >&2
+        echo "  - OR rm -rf current/* and re-run /mo-apply-impact (if you want to regenerate from scratch via stage 2)." >&2
+        echo "No state was modified." >&2
+        exit 1
+      fi
+    else
+      echo "error: current/ has partial regenerated content from a prior interrupted run (check-current=2). Re-running rotate would archive this partial state." >&2
+      echo "Options:" >&2
+      echo "  /mo-update-blueprint --force-regen <reason>  — discards current/ and regenerates from history (only valid when latest history is manual or spec-update)." >&2
+      echo "  Manually inspect/edit current/ until it's complete or empty, then re-run /mo-update-blueprint with the appropriate flag." >&2
+      echo "No state was modified." >&2
+      exit 1
+    fi
+
+  elif [[ "$cc_status" == "1" && ( "$last_kind" == "completion" || "$last_kind" == "re-spec-cascade" || "$last_kind" == "re-plan-cascade" ) ]]; then
+    # Empty current with a non-safe parent — confused state, not auto-recovered here.
+    echo "error: blueprints/current is empty/scaffold-only and the latest history version has reason.kind='$last_kind' (no safe manual/spec-update parent to resume from). This is a confused state; run /mo-resume-workflow for diagnosis." >&2
+    exit 1
+
+  elif [[ "$cc_status" == "1" ]]; then
+    # Empty/scaffold-only current with no readable parent (e.g., no history at all).
+    echo "error: blueprints/current/ is empty or scaffold-only, but there is no safe manual/spec-update history version to resume regeneration from. No rotation was performed." >&2
+    echo "Inspect blueprints/history/ and repair any missing or malformed reason.md, or rerun /mo-apply-impact if this feature should be regenerated from stage 2." >&2
+    exit 1
+
+  elif [[ "$cc_status" == "0" && "$force_regen" == "1" ]]; then
+    # Complete current/ + --force-regen: intentional override of "blueprints already complete".
+    if [[ "$last_kind" == "manual" || "$last_kind" == "spec-update" ]]; then
+      echo "Step 1.5: --force-regen on complete state. Discarding current/ and regenerating from history/v${latest_v}/ (kind=$last_kind)."
+      shopt -s dotglob nullglob
+      for entry in "$curr"/*; do rm -rf "$entry"; done
+      shopt -u dotglob nullglob
+      $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+      version="$latest_v"
+      skip_rotate=1
+    else
+      echo "error: --force-regen requires a manual/spec-update history version to restore from. Latest history is '$last_kind'. Refused." >&2
+      exit 1
+    fi
+  fi
+  # cc_status == 0 without --force-regen: fall through to the normal forward path (Step 2 rotate).
+fi
+```
+
+### Step 2 — Rotate blueprint to history
+
+(Skipped when Step 1.5 set `skip_rotate=1` — the recovery already supplied a `$version` and a scaffolded `current/` tree.)
+
+```bash
+if [[ "$skip_rotate" != "1" ]]; then
+  version="$($CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh rotate "$active_feature" \
+    --reason-kind "$reason_kind" \
+    --reason-summary "$reason_summary")"
+  echo "Previous blueprint archived into history/v${version} (kind=$reason_kind)"
+fi
 ```
 
 After this step, `blueprints/current/` is empty and `blueprints/history/v[<version>]/` holds the previous `requirements.md`, `config.md`, `diagrams/`, and the new `reason.md`.
 
 ### Step 3 — Recreate the empty `current/` tree
 
+(Skipped when Step 1.5 already ran `ensure-current` as part of the recovery branch.)
+
 ```bash
-$CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+if [[ "$skip_rotate" != "1" ]]; then
+  $CLAUDE_PLUGIN_ROOT/scripts/blueprints.sh ensure-current "$active_feature"
+fi
 ```
 
 ### Step 4 — Regenerate `blueprints/current/` content
@@ -201,7 +401,25 @@ Generate diagrams into `$data_root/workflow-stream/$active_feature/blueprints/cu
 - **Conditional**: 2–3 `sequence-<flow>.puml`, one per significant end-to-end flow in the regenerated `requirements.md`. Render 1 only if the implementation genuinely has a single flow; never more than 3.
 - **Optional, at most one**: either `class-<domain>.puml` OR `component-<subject>.puml`, never both. Use the seam classification carried forward from the previous `requirements.md` Goals items. The slot fires only when the seam is `backend` or `mixed` AND the content threshold is met (3+ classes with non-trivial relationships → class; 3+ components with non-trivial dependencies → component; linear chains don't qualify either way; pure UI / infra seams skip the slot). Apply the one-sentence test before rendering.
 
-Use the `plantuml` MCP to render each diagram; save the `.puml` source. Also write a `diagrams/README.md` with the new `requirements-id` back-reference.
+Use the `plantuml` MCP to render each diagram; save the `.puml` source. Also write a `diagrams/README.md` with the new `requirements-id` back-reference. Generate a fresh `id:` UUID for the README via `scripts/uuid.sh` and write it alongside `requirements-id`:
+
+```bash
+diagrams_readme="$data_root/workflow-stream/$active_feature/blueprints/current/diagrams/README.md"
+new_drmd_id="$($CLAUDE_PLUGIN_ROOT/scripts/uuid.sh)"
+cat > "$diagrams_readme" <<EOF
+---
+id: $new_drmd_id
+requirements-id: $new_req_id
+---
+
+# Diagrams
+
+(one-line description per .puml file in this folder)
+EOF
+$CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh validate "$diagrams_readme" diagrams-readme-blueprint >/dev/null
+```
+
+This satisfies `blueprints.sh check-current`'s `diagrams-readme-blueprint` validation requirement (the README's `requirements-id` must match `requirements.md.id`). The `id:` field follows Rule 2 of the workflow spec (every canonical artifact carries a UUID).
 
 **Apply the existing-vs-new framing convention** (see `docs/workflow-spec.md` § "Diagram conventions" and the canonical PlantUML snippets in `commands/mo-generate-implementation-diagrams.md` § "Existing-vs-new convention"). Mid-cycle blueprint regeneration is implementation-driven, so the baseline matches the stage-4 implementation diagrams: `existing` = the codebase at `active.base-commit`; `new` = `base-commit..HEAD`. The requirements-level diagrams under `blueprints/current/diagrams/` and the implementation-level diagrams under `implementation/diagrams/` should look very similar after this command runs — that's intentional, since both are now describing the same implemented reality through the same visual convention. They diverge again only when subsequent brainstorming/review work shifts requirements before the next rotation.
 

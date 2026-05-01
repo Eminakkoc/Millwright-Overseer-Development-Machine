@@ -182,4 +182,22 @@ Apply the same blue/green visual rules at both stages: pre-existing participants
 
 If the codebase-grounding pass found no existing seams for a given diagram (greenfield bootstrap with empty seam), the blue `Existing` block is empty or omitted — render only the green elements and note "no pre-existing context" in the legend.
 
-Use the `plantuml` MCP to render each diagram; save the `.puml` source alongside any generated artifact. Also write a `diagrams/README.md` with the `requirements-id` back-reference and a listing of all diagrams.
+Use the `plantuml` MCP to render each diagram; save the `.puml` source alongside any generated artifact. Also write a `diagrams/README.md` with the `requirements-id` back-reference and a listing of all diagrams. Generate a fresh `id:` UUID for the README via `scripts/uuid.sh` and write it alongside `requirements-id`:
+
+```bash
+diagrams_readme="$data_root/workflow-stream/$active_feature/blueprints/current/diagrams/README.md"
+drmd_id="$($CLAUDE_PLUGIN_ROOT/scripts/uuid.sh)"
+cat > "$diagrams_readme" <<EOF
+---
+id: $drmd_id
+requirements-id: $requirements_id
+---
+
+# Diagrams
+
+(one-line description per .puml file in this folder)
+EOF
+$CLAUDE_PLUGIN_ROOT/scripts/frontmatter.sh validate "$diagrams_readme" diagrams-readme-blueprint >/dev/null
+```
+
+This satisfies `blueprints.sh check-current`'s requirement that the README validate against `diagrams-readme-blueprint` with a matching `requirements-id`. The `id:` field follows Rule 2 of the workflow spec.

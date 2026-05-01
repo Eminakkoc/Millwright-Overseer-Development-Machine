@@ -126,6 +126,33 @@ properties:
             type: boolean
           overseer-review-completed:
             type: boolean
+          drift-check-completed:
+            type: boolean
+            description: >
+              True once the Stage-4 drift prompt has been answered (either
+              "continue" or a reason fed to /mo-update-blueprint). Optional —
+              missing means false. Used by the Resume Handler's Step 0 probe
+              to skip re-prompting after a session break that lost the marker
+              write but completed the underlying rotation. /mo-abort-workflow's
+              reset intentionally drops this field so the next stage-3 entry
+              starts with a fresh state.
+          history-baseline-version:
+            oneOf:
+              - type: "null"
+              - type: integer
+                minimum: 0
+            description: >
+              Highest blueprints/history/v[N] index for active.feature at
+              stage-3 entry. Used by the Resume Handler's drift-completion
+              probe to distinguish this-cycle rotations from prior-cycle
+              rotations. Optional — missing/null means "unknown" (the probe
+              treats unknown specially: it captures the current finalized
+              version and disables the probe for that invocation rather than
+              defaulting to 0, which would mistake old spec-update history for
+              this-cycle drift). Captured by /mo-plan-implementation alongside
+              base-commit on first stage-3 entry; preserved across re-entries
+              (the re-entry guard skips Step 3 entirely). /mo-abort-workflow's
+              reset intentionally drops this field.
           worktree-path:
             type: string
             minLength: 1

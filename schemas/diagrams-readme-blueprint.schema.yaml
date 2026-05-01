@@ -1,0 +1,50 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: millwright-overseer-development-machine/diagrams-readme-blueprint.schema.yaml
+title: workflow-stream/<feature>/blueprints/current/diagrams/README.md frontmatter
+description: >
+  Blueprint diagrams index. Carries a back-reference to the requirements
+  iteration the diagrams describe (`requirements-id`) so PMs can correlate
+  rendered .puml files with the requirements they were drawn for. New READMEs
+  also carry an `id` (UUID) per the canonical-shape rule (Rule 2 of the
+  workflow spec); legacy READMEs without `id` keep validating for back-compat
+  via the migration helper at scripts/migrate-diagrams-readme.sh.
+
+  UUID pattern accepts any RFC 4122 version (v1-v8) with a valid variant
+  nibble. New READMEs from scripts/uuid.sh are v4 by default; the permissive
+  pattern lets hand-edited or migrated values validate without surface noise.
+
+type: object
+additionalProperties: false
+required:
+  - requirements-id
+
+properties:
+  id:
+    type: string
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    description: >
+      Optional UUID — present on READMEs generated after Item 9 of the v11
+      progress-gap plan ships; absent on legacy READMEs. The migration helper
+      (scripts/migrate-diagrams-readme.sh) back-fills `id` only when missing;
+      a present-but-invalid `id` is surfaced for overseer review rather than
+      auto-rewritten (it may be a deliberately-chosen external reference key).
+
+  requirements-id:
+    type: string
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    description: >
+      MUST match the sibling blueprints/current/requirements.md `id`. The
+      check-current helper compares this to detect READMEs whose back-reference
+      went stale across blueprint rotations; the migration helper refreshes
+      stale references in-place.
+
+  contributors:
+    type: array
+    items:
+      type: string
+    description: Optional list of contributors to the diagrams.
+
+  date:
+    type: string
+    format: date
+    description: Optional ISO-8601 date the README was last updated.
